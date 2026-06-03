@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>我的感悟笔记</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#/">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>我的感悟笔记</span>
+      </a>
+      <input id="searchInput" type="search" placeholder="搜索" autocomplete="off" />
+    </header>
+
+    <main class="workspace" aria-live="polite">
+      <div id="view"></div>
+    </main>
+
+    <script src="./notes-data.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
