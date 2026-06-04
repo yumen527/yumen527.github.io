@@ -353,6 +353,15 @@ h1 {
   color: var(--muted);
 }
 
+.shelf-title span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 .read-only-note {
   margin: 0;
   font-size: 14px;
@@ -593,7 +602,7 @@ h1 {
 
   .shelf {
     min-height: 220px;
-    height: 260px;
+    height: 292px;
   }
 
   .shelves,
