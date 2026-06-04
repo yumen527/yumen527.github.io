@@ -514,18 +514,33 @@
     return folder && folder.id !== ROOT_ID ? `#/folder/${encodeURIComponent(folder.id)}` : "#/";
   }
 
-  function renderLocationBar({ title, backTarget = null, actions = "" }) {
+  function renderModeNote() {
+    return !isAdmin ? `<span class="mode-note">只读模式</span>` : "";
+  }
+
+  function renderLocationPath(trail) {
+    return `
+      <nav class="location-path" aria-label="路径">
+        ${trail
+          .map(
+            (folder, index) => `
+              <a href="${folderHref(folder)}">
+                ${escapeHtml(index === 0 ? "书房" : folder.name)}
+              </a>
+            `
+          )
+          .join('<span aria-hidden="true">/</span>')}
+      </nav>
+    `;
+  }
+
+  function renderLocationBar({ trail, actions = "" }) {
     return `
       <section class="location-bar">
         <div class="location-main">
-          ${
-            backTarget
-              ? `<a class="back-icon" href="${folderHref(backTarget)}" aria-label="返回上一级"></a>`
-              : ""
-          }
-          <span class="location-title">${escapeHtml(title)}</span>
+          ${renderLocationPath(trail)}
         </div>
-        ${actions}
+        ${actions || renderModeNote()}
       </section>
     `;
   }
@@ -573,7 +588,7 @@
       ${renderSetupNotice()}
       ${renderExtensionNotice()}
       ${renderLocationBar({
-        title: "书房",
+        trail: [root],
         actions: renderPageActions({
           folderId: ROOT_ID,
           includeNote: true,
@@ -637,12 +652,10 @@
     }
 
     const { folder, trail } = found;
-    const parent = trail.at(-2) || library.root;
     view.innerHTML = `
       ${renderExtensionNotice()}
       ${renderLocationBar({
-        title: folder.name,
-        backTarget: parent,
+        trail,
         actions: renderPageActions({ folderId: folder.id, includeNote: true }),
       })}
       ${renderContentGrid(folder)}

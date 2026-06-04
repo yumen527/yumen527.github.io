@@ -22,7 +22,7 @@ create table if not exists public.folders (
 
 create table if not exists public.notes (
   id uuid primary key default gen_random_uuid(),
-  folder_id uuid not null references public.folders(id) on delete cascade,
+  folder_id uuid references public.folders(id) on delete cascade,
   title text not null default '未命名笔记',
   content text not null default '',
   pinned boolean not null default false,
@@ -33,6 +33,7 @@ create table if not exists public.notes (
 
 alter table public.folders add column if not exists pinned boolean not null default false;
 alter table public.folders add column if not exists sort_order integer not null default 0;
+alter table public.notes alter column folder_id drop not null;
 alter table public.notes add column if not exists pinned boolean not null default false;
 alter table public.notes add column if not exists sort_order integer not null default 0;
 
