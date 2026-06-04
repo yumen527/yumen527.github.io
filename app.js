@@ -29,6 +29,7 @@
   let selectedItems = new Map();
   let searchOpen = false;
   let authMenuOpen = false;
+  let pageActionsOpen = false;
   let pressTimer = null;
   let suppressNextClickKey = "";
 
@@ -453,6 +454,35 @@
     renderAuthControls();
   }
 
+  function togglePageActions() {
+    pageActionsOpen = !pageActionsOpen;
+    route();
+  }
+
+  function renderPageActions({ folderId, includeNote = false, includeImport = false }) {
+    if (!isAdmin) return `<p class="read-only-note">只读模式</p>`;
+    const safeFolderId = escapeHtml(folderId);
+    const importButton = includeImport
+      ? `<button class="button page-action-item" type="button" data-action="import-seed">导入初始笔记</button>`
+      : "";
+    const folderButton = `<button class="button page-action-item" type="button" data-action="add-folder" data-folder-id="${safeFolderId}">+ 文件夹</button>`;
+    const noteButton = includeNote
+      ? `<button class="button primary page-action-item" type="button" data-action="add-note" data-folder-id="${safeFolderId}">+ 笔记</button>`
+      : "";
+    return `
+      <div class="actions page-actions">
+        <button class="icon-button page-action-toggle" type="button" data-action="toggle-page-actions" aria-label="新增" aria-expanded="${pageActionsOpen}">
+          <span class="plus-icon" aria-hidden="true"></span>
+        </button>
+        <div class="page-actions-menu ${pageActionsOpen ? "is-open" : ""}">
+          ${importButton}
+          ${folderButton}
+          ${noteButton}
+        </div>
+      </div>
+    `;
+  }
+
   function renderBreadcrumb(trail) {
     return `
       <nav class="crumbs" aria-label="路径">
@@ -492,16 +522,10 @@
           <p class="eyebrow">Bookshelf</p>
           <h1>书房</h1>
         </div>
-        ${
-          isAdmin
-            ? `
-              <div class="actions">
-                ${root.folders.length === 0 && seed.categories.length ? `<button class="button" type="button" data-action="import-seed">导入初始笔记</button>` : ""}
-                <button class="button primary" type="button" data-action="add-folder" data-folder-id="${ROOT_ID}">+ 文件夹</button>
-              </div>
-            `
-            : `<p class="read-only-note">只读模式</p>`
-        }
+        ${renderPageActions({
+          folderId: ROOT_ID,
+          includeImport: root.folders.length === 0 && seed.categories.length,
+        })}
       </section>
 
       <section class="shelves">
@@ -579,16 +603,7 @@
           <p class="eyebrow">Folder</p>
           <h1>${escapeHtml(folder.name)}</h1>
         </div>
-        <div class="actions">
-          ${
-            isAdmin
-              ? `
-                <button class="button" type="button" data-action="add-folder" data-folder-id="${escapeHtml(folder.id)}">+ 文件夹</button>
-                <button class="button primary" type="button" data-action="add-note" data-folder-id="${escapeHtml(folder.id)}">+ 笔记</button>
-              `
-              : `<p class="read-only-note">只读模式</p>`
-          }
-        </div>
+        ${renderPageActions({ folderId: folder.id, includeNote: true })}
       </section>
 
       <section class="shelves sub-shelves">
@@ -1207,6 +1222,7 @@
     }
     if (target.dataset.action === "close-search") closeSearch(true);
     if (target.dataset.action === "toggle-auth-menu") toggleAuthMenu();
+    if (target.dataset.action === "toggle-page-actions") togglePageActions();
     if (target.dataset.action === "login") {
       authMenuOpen = false;
       renderAuthControls();
@@ -1216,11 +1232,20 @@
       authMenuOpen = false;
       logout();
     }
-    if (target.dataset.action === "add-folder") openFolderDialog(target.dataset.folderId);
-    if (target.dataset.action === "add-note") addNote(target.dataset.folderId);
+    if (target.dataset.action === "add-folder") {
+      pageActionsOpen = false;
+      openFolderDialog(target.dataset.folderId);
+    }
+    if (target.dataset.action === "add-note") {
+      pageActionsOpen = false;
+      addNote(target.dataset.folderId);
+    }
     if (target.dataset.action === "edit-note") location.hash = `#/edit/${encodeURIComponent(target.dataset.noteId)}`;
     if (target.dataset.action === "close-modal") document.querySelector(".modal-backdrop")?.remove();
-    if (target.dataset.action === "import-seed") importSeed();
+    if (target.dataset.action === "import-seed") {
+      pageActionsOpen = false;
+      importSeed();
+    }
     if (target.dataset.action === "clear-selection") clearSelection();
     if (target.dataset.action === "rename-selected") openRenameSelectedDialog();
     if (target.dataset.action === "delete-selected") openDeleteSelectedDialog();
@@ -1234,9 +1259,14 @@
     }
     const actionTarget = event.target.closest("[data-action]");
     if (actionTarget?.dataset.action === "toggle-auth-menu") return;
+    if (actionTarget?.dataset.action === "toggle-page-actions") return;
     if (authMenuOpen && !event.target.closest("#authSlot")) {
       authMenuOpen = false;
       renderAuthControls();
+    }
+    if (pageActionsOpen && !event.target.closest(".page-actions")) {
+      pageActionsOpen = false;
+      route();
     }
   });
 
@@ -1247,6 +1277,10 @@
       else if (authMenuOpen) {
         authMenuOpen = false;
         renderAuthControls();
+      }
+      else if (pageActionsOpen) {
+        pageActionsOpen = false;
+        route();
       }
       else if (selectionMode) clearSelection();
     }

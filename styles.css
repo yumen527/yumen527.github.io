@@ -149,6 +149,45 @@ h1 {
   justify-content: flex-end;
 }
 
+.page-actions {
+  position: relative;
+}
+
+.page-action-toggle {
+  display: none;
+}
+
+.plus-icon {
+  position: relative;
+  width: 16px;
+  height: 16px;
+}
+
+.plus-icon::before,
+.plus-icon::after {
+  content: "";
+  position: absolute;
+  inset: 7px 1px auto;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.plus-icon::after {
+  transform: rotate(90deg);
+}
+
+.page-actions-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.page-actions-menu .button {
+  min-width: 100px;
+}
+
 .button {
   cursor: pointer;
   display: inline-flex;
@@ -861,11 +900,77 @@ select.modal-input {
   }
 
   .page-head {
-    gap: 14px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+
+  .page-head .eyebrow {
+    display: none;
+  }
+
+  .page-head h1 {
+    font-size: clamp(28px, 9vw, 38px);
+    line-height: 1.12;
+  }
+
+  .page-head .read-only-note {
+    align-self: center;
+    font-size: 12px;
   }
 
   .actions {
     justify-content: flex-start;
+  }
+
+  .page-actions {
+    align-self: start;
+    justify-self: end;
+  }
+
+  .page-action-toggle {
+    display: grid;
+  }
+
+  .page-actions-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 10;
+    display: none;
+    width: max-content;
+    max-width: min(260px, calc(100vw - 36px));
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: rgba(255, 253, 248, 0.96);
+    box-shadow: 0 14px 38px rgba(32, 33, 31, 0.14);
+  }
+
+  .page-actions-menu.is-open {
+    display: grid;
+    gap: 8px;
+  }
+
+  .page-actions-menu .button {
+    justify-content: flex-start;
+    min-width: 126px;
+    min-height: 36px;
+    padding: 7px 10px;
+    font-size: 15px;
+  }
+
+  .note-shelf {
+    margin-top: 28px;
+  }
+
+  .section-line {
+    gap: 10px;
+    margin-bottom: 12px;
+    color: var(--ink);
+    font-size: 18px;
   }
 
   .shelf {
