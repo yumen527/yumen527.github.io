@@ -4,6 +4,7 @@
   const view = document.getElementById("view");
   const searchInput = document.getElementById("searchInput");
   const authSlot = document.getElementById("authSlot");
+  const AUTH_SESSION_KEY = "thought-note-supabase-session-v1";
 
   const configReady = Boolean(
     config.url &&
@@ -11,50 +12,49 @@
       !config.url.includes("YOUR_") &&
       !config.anonKey.includes("YOUR_")
   );
-  let cloudReady = false;
-  let db = null;
+  const cloudReady = configReady;
 
   let folders = [];
   let notes = [];
   let library = { root: { id: "root", name: "书房", folders: [], notes: [] } };
-  let session = null;
+  let session = loadStoredSession();
   let isAdmin = false;
   let currentError = "";
 
-  function loadScript(src, timeout = 7000) {
-    return new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      const timer = window.setTimeout(() => {
-        script.remove();
-        reject(new Error("load timeout"));
-      }, timeout);
-
-      script.src = src;
-      script.onload = () => {
-        window.clearTimeout(timer);
-        resolve();
-      };
-      script.onerror = () => {
-        window.clearTimeout(timer);
-        reject(new Error("load failed"));
-      };
-      document.head.appendChild(script);
-    });
+  function loadStoredSession() {
+    try {
+      return JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || "null");
+    } catch {
+      localStorage.removeItem(AUTH_SESSION_KEY);
+      return null;
+    }
   }
 
-  async function initSupabaseClient() {
-    if (!configReady) return;
-    if (!window.supabase) {
-      try {
-        await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2");
-      } catch {
-        await loadScript("https://unpkg.com/@supabase/supabase-js@2");
-      }
+  function storeSession(nextSession) {
+    session = nextSession;
+    if (nextSession) localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(nextSession));
+    else localStorage.removeItem(AUTH_SESSION_KEY);
+  }
+
+  async function api(path, options = {}, useUserToken = false) {
+    if (!configReady) throw new Error("Supabase 尚未配置");
+    const token = useUserToken && session?.access_token ? session.access_token : config.anonKey;
+    const response = await fetch(`${config.url}${path}`, {
+      ...options,
+      headers: {
+        apikey: config.anonKey,
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+
+    const text = await response.text();
+    const body = text ? JSON.parse(text) : null;
+    if (!response.ok) {
+      throw new Error(body?.message || body?.error_description || body?.error || "云端请求失败");
     }
-    if (window.supabase) {
-      db = window.supabase.createClient(config.url, config.anonKey);
-      cloudReady = true;
-    }
+    return body;
   }
 
   function escapeHtml(value) {
@@ -204,43 +204,43 @@
   }
 
   async function refreshAuth() {
-    if (!db) {
+    if (!configReady || !session?.access_token) {
       session = null;
       isAdmin = false;
       return;
     }
 
-    const { data } = await db.auth.getSession();
-    session = data.session || null;
-    isAdmin = false;
-
-    if (session) {
-      const { data: adminResult, error } = await db.rpc("is_notes_admin");
-      isAdmin = !error && adminResult === true;
+    try {
+      const adminResult = await api("/rest/v1/rpc/is_notes_admin", {
+        method: "POST",
+        body: "{}",
+      }, true);
+      isAdmin = adminResult === true;
+    } catch {
+      storeSession(null);
+      isAdmin = false;
     }
   }
 
   async function loadCloudData() {
-    if (!db) {
+    if (!configReady) {
       buildPreviewTree();
       return;
     }
 
     currentError = "";
-    const [folderResult, noteResult] = await Promise.all([
-      db.from("folders").select("id,name,parent_id,created_at,updated_at").order("created_at", { ascending: true }),
-      db.from("notes").select("id,title,content,folder_id,created_at,updated_at").order("updated_at", { ascending: false }),
-    ]);
-
-    if (folderResult.error || noteResult.error) {
-      currentError = folderResult.error?.message || noteResult.error?.message || "无法读取云端数据";
+    try {
+      const [folderResult, noteResult] = await Promise.all([
+        api("/rest/v1/folders?select=id,name,parent_id,created_at,updated_at&order=created_at.asc"),
+        api("/rest/v1/notes?select=id,title,content,folder_id,created_at,updated_at&order=updated_at.desc"),
+      ]);
+      folders = folderResult || [];
+      notes = noteResult || [];
+      buildTree();
+    } catch (error) {
+      currentError = error.message || "无法读取云端数据";
       buildPreviewTree();
-      return;
     }
-
-    folders = folderResult.data || [];
-    notes = noteResult.data || [];
-    buildTree();
   }
 
   async function refresh() {
@@ -251,13 +251,8 @@
   }
 
   function renderAuthControls() {
-    if (!configReady) {
-      authSlot.innerHTML = `<span class="status-badge">云端未配置</span>`;
-      return;
-    }
-
     if (!cloudReady) {
-      authSlot.innerHTML = `<span class="status-badge">云端连接中</span>`;
+      authSlot.innerHTML = `<span class="status-badge">云端未配置</span>`;
       return;
     }
 
@@ -292,9 +287,7 @@
     if (cloudReady && !currentError) return "";
     const message = currentError
       ? `云端读取失败：${currentError}`
-      : configReady
-        ? "正在连接云端数据库。若网络较慢，会先显示本地预览。"
-        : "还没有填写 Supabase 配置。当前只是预览初始笔记，配置完成后会使用云端数据库。";
+      : "还没有填写 Supabase 配置。当前只是预览初始笔记，配置完成后会使用云端数据库。";
     return `<div class="setup-card">${escapeHtml(message)}</div>`;
   }
 
@@ -349,8 +342,8 @@
           isAdmin
             ? `
               <div class="item-actions">
-                <button class="mini-button" type="button" data-action="rename-folder" data-folder-id="${escapeHtml(folder.id)}">重命名</button>
-                <button class="mini-button danger" type="button" data-action="delete-folder" data-folder-id="${escapeHtml(folder.id)}">删除</button>
+                <button class="mini-button" type="button" data-action="rename-folder" data-folder-id="${escapeHtml(folder.id)}" aria-label="重命名 ${escapeHtml(folder.name)}">重命名</button>
+                <button class="mini-button danger" type="button" data-action="delete-folder" data-folder-id="${escapeHtml(folder.id)}" aria-label="删除 ${escapeHtml(folder.name)}">删除</button>
               </div>
             `
             : ""
@@ -448,7 +441,7 @@
       ${renderBreadcrumb(trail)}
       <article class="reader">
         <header class="reader-head">
-          <a class="button" href="#/folder/${encodeURIComponent(folder.id)}">返回</a>
+          <a class="button back-button" href="#/folder/${encodeURIComponent(folder.id)}">返回文件夹</a>
           ${
             isAdmin
               ? `<button class="button primary" type="button" data-action="edit-note" data-note-id="${escapeHtml(note.id)}">编辑</button>`
@@ -477,7 +470,7 @@
       ${renderBreadcrumb(trail)}
       <form class="editor" data-note-id="${escapeHtml(note.id)}">
         <div class="editor-head">
-          <a class="button" href="#/note/${encodeURIComponent(note.id)}">取消</a>
+          <a class="button back-button" href="#/note/${encodeURIComponent(note.id)}">返回阅读</a>
           <button class="button primary" type="submit">保存</button>
         </div>
         <input class="title-input" name="title" value="${escapeHtml(note.title || "")}" placeholder="标题" />
@@ -522,9 +515,10 @@
           <form class="modal folder-form" data-folder-id="${escapeHtml(parentId)}">
             <div class="modal-head">
               <strong>新文件夹</strong>
-              <button class="plain-button" type="button" data-action="close-modal">x</button>
+              <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
             </div>
             <input class="modal-input" name="name" placeholder="文件夹名称" autocomplete="off" />
+            <p class="modal-hint">名称会显示在书架卡片上，建议保持简短。</p>
             <div class="modal-actions">
               <button class="button" type="button" data-action="close-modal">取消</button>
               <button class="button primary" type="submit">添加</button>
@@ -549,9 +543,10 @@
           <form class="modal folder-rename-form" data-folder-id="${escapeHtml(folderId)}">
             <div class="modal-head">
               <strong>重命名文件夹</strong>
-              <button class="plain-button" type="button" data-action="close-modal">x</button>
+              <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
             </div>
             <input class="modal-input" name="name" value="${escapeHtml(found.folder.name)}" placeholder="文件夹名称" autocomplete="off" />
+            <p class="modal-hint">只会修改显示名称，不会影响里面已有的笔记。</p>
             <div class="modal-actions">
               <button class="button" type="button" data-action="close-modal">取消</button>
               <button class="button primary" type="submit">保存</button>
@@ -560,7 +555,9 @@
         </div>
       `
     );
-    document.querySelector(".modal-input")?.focus();
+    const input = document.querySelector(".modal-input");
+    input?.focus();
+    input?.select();
   }
 
   function openDeleteFolderDialog(folderId) {
@@ -576,9 +573,9 @@
           <form class="modal folder-delete-form" data-folder-id="${escapeHtml(folderId)}">
             <div class="modal-head">
               <strong>删除文件夹</strong>
-              <button class="plain-button" type="button" data-action="close-modal">x</button>
+              <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
             </div>
-            <p class="modal-hint">确定删除“${escapeHtml(found.folder.name)}”吗？里面的子文件夹和笔记也会一起删除。</p>
+            <p class="modal-hint">确定删除“${escapeHtml(found.folder.name)}”吗？里面的子文件夹和笔记也会一起删除，此操作不可撤销。</p>
             <div class="modal-actions">
               <button class="button" type="button" data-action="close-modal">取消</button>
               <button class="button danger-button" type="submit">删除</button>
@@ -599,7 +596,7 @@
           <form class="modal login-form">
             <div class="modal-head">
               <strong>管理员登录</strong>
-              <button class="plain-button" type="button" data-action="close-modal">x</button>
+              <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
             </div>
             <input class="modal-input" type="email" name="email" placeholder="邮箱" autocomplete="email" />
             <input class="modal-input" type="password" name="password" placeholder="密码" autocomplete="current-password" />
@@ -621,8 +618,17 @@
     const password = String(data.get("password") || "");
     const hint = form.querySelector(".modal-hint");
 
-    const { error } = await db.auth.signInWithPassword({ email, password });
-    if (error) {
+    try {
+      const authResult = await api("/auth/v1/token?grant_type=password", {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
+      storeSession({
+        access_token: authResult.access_token,
+        refresh_token: authResult.refresh_token,
+        user: authResult.user,
+      });
+    } catch (error) {
       hint.textContent = error.message || "登录失败。";
       return;
     }
@@ -632,8 +638,8 @@
   }
 
   async function logout() {
-    if (!db) return;
-    await db.auth.signOut();
+    storeSession(null);
+    isAdmin = false;
     await refresh();
   }
 
@@ -643,15 +649,20 @@
     const name = String(new FormData(form).get("name") || "").trim();
     if (!name) return;
 
-    const { error } = await db.from("folders").insert({
-      name,
-      parent_id: parentId === "root" ? null : parentId,
-    });
-
-    if (error) return showError(error.message);
-    document.querySelector(".modal-backdrop")?.remove();
-    await refresh();
-    location.hash = parentId === "root" ? "#/" : `#/folder/${encodeURIComponent(parentId)}`;
+    try {
+      await api("/rest/v1/folders", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          parent_id: parentId === "root" ? null : parentId,
+        }),
+      }, true);
+      document.querySelector(".modal-backdrop")?.remove();
+      await refresh();
+      location.hash = parentId === "root" ? "#/" : `#/folder/${encodeURIComponent(parentId)}`;
+    } catch (error) {
+      showError(error.message);
+    }
   }
 
   async function renameFolder(form) {
@@ -662,11 +673,16 @@
     const name = String(new FormData(form).get("name") || "").trim();
     if (!name) return;
 
-    const { error } = await db.from("folders").update({ name }).eq("id", found.folder.id);
-    if (error) return showError(error.message);
-
-    document.querySelector(".modal-backdrop")?.remove();
-    await refresh();
+    try {
+      await api(`/rest/v1/folders?id=eq.${encodeURIComponent(found.folder.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      }, true);
+      document.querySelector(".modal-backdrop")?.remove();
+      await refresh();
+    } catch (error) {
+      showError(error.message);
+    }
   }
 
   async function deleteFolder(form) {
@@ -675,25 +691,31 @@
     if (!found || found.folder.id === "root") return;
 
     const parent = found.trail.at(-2);
-    const { error } = await db.from("folders").delete().eq("id", found.folder.id);
-    if (error) return showError(error.message);
-
-    document.querySelector(".modal-backdrop")?.remove();
-    await refresh();
-    location.hash = !parent || parent.id === "root" ? "#/" : `#/folder/${encodeURIComponent(parent.id)}`;
+    try {
+      await api(`/rest/v1/folders?id=eq.${encodeURIComponent(found.folder.id)}`, {
+        method: "DELETE",
+      }, true);
+      document.querySelector(".modal-backdrop")?.remove();
+      await refresh();
+      location.hash = !parent || parent.id === "root" ? "#/" : `#/folder/${encodeURIComponent(parent.id)}`;
+    } catch (error) {
+      showError(error.message);
+    }
   }
 
   async function addNote(folderId) {
     if (!isAdmin) return;
-    const { data, error } = await db
-      .from("notes")
-      .insert({ folder_id: folderId, title: "新笔记", content: "" })
-      .select("id")
-      .single();
-
-    if (error) return showError(error.message);
-    await refresh();
-    location.hash = `#/edit/${encodeURIComponent(data.id)}`;
+    try {
+      const rows = await api("/rest/v1/notes?select=id", {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ folder_id: folderId, title: "新笔记", content: "" }),
+      }, true);
+      await refresh();
+      location.hash = `#/edit/${encodeURIComponent(rows[0].id)}`;
+    } catch (error) {
+      showError(error.message);
+    }
   }
 
   async function saveNote(form) {
@@ -702,28 +724,35 @@
     if (!found) return;
 
     const data = new FormData(form);
-    const { error } = await db
-      .from("notes")
-      .update({
+    try {
+      await api(`/rest/v1/notes?id=eq.${encodeURIComponent(found.note.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
         title: String(data.get("title") || "").trim() || "未命名笔记",
         content: String(data.get("content") || ""),
-      })
-      .eq("id", found.note.id);
-
-    if (error) return showError(error.message);
-    await refresh();
-    location.hash = `#/note/${encodeURIComponent(found.note.id)}`;
+        }),
+      }, true);
+      await refresh();
+      location.hash = `#/note/${encodeURIComponent(found.note.id)}`;
+    } catch (error) {
+      showError(error.message);
+    }
   }
 
   async function importSeed() {
     if (!isAdmin || !seed.categories.length) return;
     for (const category of seed.categories) {
-      const { data: folder, error: folderError } = await db
-        .from("folders")
-        .insert({ name: category.name, parent_id: null })
-        .select("id")
-        .single();
-      if (folderError) return showError(folderError.message);
+      let folder;
+      try {
+        const folderRows = await api("/rest/v1/folders?select=id", {
+          method: "POST",
+          headers: { Prefer: "return=representation" },
+          body: JSON.stringify({ name: category.name, parent_id: null }),
+        }, true);
+        folder = folderRows[0];
+      } catch (error) {
+        return showError(error.message);
+      }
 
       const rows = category.notes.map((note) => ({
         folder_id: folder.id,
@@ -731,8 +760,14 @@
         content: note.content || "",
       }));
       if (rows.length) {
-        const { error: noteError } = await db.from("notes").insert(rows);
-        if (noteError) return showError(noteError.message);
+        try {
+          await api("/rest/v1/notes", {
+            method: "POST",
+            body: JSON.stringify(rows),
+          }, true);
+        } catch (error) {
+          return showError(error.message);
+        }
       }
     }
     await refresh();
@@ -772,6 +807,18 @@
     if (target.dataset.action === "import-seed") importSeed();
   });
 
+  document.addEventListener("click", (event) => {
+    if (event.target.matches(".modal-backdrop")) {
+      event.target.remove();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      document.querySelector(".modal-backdrop")?.remove();
+    }
+  });
+
   document.addEventListener("submit", (event) => {
     if (event.target.matches(".login-form")) {
       event.preventDefault();
@@ -805,20 +852,9 @@
 
   searchInput.addEventListener("input", () => renderSearch(searchInput.value));
   window.addEventListener("hashchange", route);
-  if (db) db.auth.onAuthStateChange(() => refresh());
 
   buildPreviewTree();
   renderAuthControls();
   route();
-
-  initSupabaseClient()
-    .then(() => {
-      if (db) db.auth.onAuthStateChange(() => refresh());
-      return refresh();
-    })
-    .catch((error) => {
-      currentError = `Supabase 客户端加载失败：${error.message}`;
-      renderAuthControls();
-      route();
-    });
+  refresh();
 })();
