@@ -5,6 +5,8 @@
   const searchInput = document.getElementById("searchInput");
   const authSlot = document.getElementById("authSlot");
   const AUTH_SESSION_KEY = "thought-note-supabase-session-v1";
+  const LONG_PRESS_MS = 520;
+  const ROOT_ID = "root";
 
   const configReady = Boolean(
     config.url &&
@@ -16,10 +18,15 @@
 
   let folders = [];
   let notes = [];
-  let library = { root: { id: "root", name: "书房", folders: [], notes: [] } };
+  let library = { root: { id: ROOT_ID, name: "书房", folders: [], notes: [] } };
   let session = loadStoredSession();
   let isAdmin = false;
   let currentError = "";
+  let hasExtendedFields = true;
+  let selectionMode = false;
+  let selectedItems = new Map();
+  let pressTimer = null;
+  let suppressNextClickKey = "";
 
   function loadStoredSession() {
     try {
@@ -135,6 +142,45 @@
     return folder.folders.length + folder.folders.reduce((sum, child) => sum + countFolders(child), 0);
   }
 
+  function itemKey(type, id) {
+    return `${type}:${id}`;
+  }
+
+  function selectedArray() {
+    return Array.from(selectedItems.values());
+  }
+
+  function isSelected(type, id) {
+    return selectedItems.has(itemKey(type, id));
+  }
+
+  function clearSelection(render = true) {
+    selectionMode = false;
+    selectedItems = new Map();
+    if (render) route();
+  }
+
+  function enterSelection(type, id) {
+    if (!isAdmin || !id || id === ROOT_ID) return;
+    selectionMode = true;
+    selectedItems.set(itemKey(type, id), { type, id });
+    route();
+  }
+
+  function toggleSelection(type, id) {
+    if (!isAdmin || !selectionMode || !id || id === ROOT_ID) return;
+    const key = itemKey(type, id);
+    if (selectedItems.has(key)) selectedItems.delete(key);
+    else selectedItems.set(key, { type, id });
+    if (!selectedItems.size) selectionMode = false;
+    route();
+  }
+
+  function getItem(item) {
+    if (item.type === "folder") return findFolder(item.id)?.folder || null;
+    return findNote(item.id)?.note || null;
+  }
+
   function findFolder(id, folder = library.root, trail = []) {
     if (folder.id === id) return { folder, trail: [...trail, folder] };
     for (const child of folder.folders) {
@@ -161,12 +207,62 @@
     ];
   }
 
+  function allFolders(folder = library.root, trail = []) {
+    return [
+      { folder, trail: [...trail, folder] },
+      ...folder.folders.flatMap((child) => allFolders(child, [...trail, folder])),
+    ];
+  }
+
+  function isFolderInside(folderId, possibleAncestorId) {
+    const found = findFolder(folderId);
+    return Boolean(found?.trail.some((item) => item.id === possibleAncestorId));
+  }
+
+  function compareFolders(a, b) {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+    const orderDiff = Number(a.sort_order || 0) - Number(b.sort_order || 0);
+    if (orderDiff) return orderDiff;
+    return String(a.created_at || "").localeCompare(String(b.created_at || ""));
+  }
+
+  function compareNotes(a, b) {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+    const orderDiff = Number(a.sort_order || 0) - Number(b.sort_order || 0);
+    if (orderDiff) return orderDiff;
+    return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
+  }
+
+  function sortTree(folder) {
+    folder.folders.sort(compareFolders);
+    folder.notes.sort(compareNotes);
+    folder.folders.forEach(sortTree);
+  }
+
+  function normalizeFolder(folder) {
+    return {
+      ...folder,
+      pinned: Boolean(folder.pinned),
+      sort_order: Number(folder.sort_order || 0),
+      folders: [],
+      notes: [],
+    };
+  }
+
+  function normalizeNote(note) {
+    return {
+      ...note,
+      pinned: Boolean(note.pinned),
+      sort_order: Number(note.sort_order || 0),
+    };
+  }
+
   function buildTree() {
-    const root = { id: "root", name: "书房", folders: [], notes: [] };
+    const root = { id: ROOT_ID, name: "书房", folders: [], notes: [] };
     const byId = new Map();
 
     folders.forEach((folder) => {
-      byId.set(folder.id, { ...folder, folders: [], notes: [] });
+      byId.set(folder.id, normalizeFolder(folder));
     });
 
     byId.forEach((folder) => {
@@ -175,27 +271,33 @@
     });
 
     notes.forEach((note) => {
-      const parent = note.folder_id ? byId.get(note.folder_id) : root;
-      (parent || root).notes.push(note);
+      const normalized = normalizeNote(note);
+      const parent = normalized.folder_id ? byId.get(normalized.folder_id) : root;
+      (parent || root).notes.push(normalized);
     });
 
+    sortTree(root);
     library = { root };
   }
 
   function buildPreviewTree() {
     library = {
       root: {
-        id: "root",
+        id: ROOT_ID,
         name: "书房",
         folders: seed.categories.map((category, index) => ({
           id: `preview-folder-${index}`,
           name: category.name,
+          pinned: false,
+          sort_order: index,
           folders: [],
           notes: category.notes.map((note, noteIndex) => ({
             id: `preview-note-${index}-${noteIndex}`,
             title: note.title,
             content: note.content || "",
             updated_at: note.updatedAt || today(),
+            pinned: false,
+            sort_order: noteIndex,
           })),
         })),
         notes: [],
@@ -211,14 +313,36 @@
     }
 
     try {
-      const adminResult = await api("/rest/v1/rpc/is_notes_admin", {
-        method: "POST",
-        body: "{}",
-      }, true);
+      const adminResult = await api(
+        "/rest/v1/rpc/is_notes_admin",
+        {
+          method: "POST",
+          body: "{}",
+        },
+        true
+      );
       isAdmin = adminResult === true;
     } catch {
       storeSession(null);
       isAdmin = false;
+    }
+  }
+
+  async function fetchCloudRows() {
+    try {
+      const [folderResult, noteResult] = await Promise.all([
+        api("/rest/v1/folders?select=id,name,parent_id,pinned,sort_order,created_at,updated_at&order=created_at.asc"),
+        api("/rest/v1/notes?select=id,title,content,folder_id,pinned,sort_order,created_at,updated_at&order=updated_at.desc"),
+      ]);
+      hasExtendedFields = true;
+      return [folderResult || [], noteResult || []];
+    } catch (firstError) {
+      const [folderResult, noteResult] = await Promise.all([
+        api("/rest/v1/folders?select=id,name,parent_id,created_at,updated_at&order=created_at.asc"),
+        api("/rest/v1/notes?select=id,title,content,folder_id,created_at,updated_at&order=updated_at.desc"),
+      ]);
+      hasExtendedFields = false;
+      return [folderResult || [], noteResult || []];
     }
   }
 
@@ -230,12 +354,9 @@
 
     currentError = "";
     try {
-      const [folderResult, noteResult] = await Promise.all([
-        api("/rest/v1/folders?select=id,name,parent_id,created_at,updated_at&order=created_at.asc"),
-        api("/rest/v1/notes?select=id,title,content,folder_id,created_at,updated_at&order=updated_at.desc"),
-      ]);
-      folders = folderResult || [];
-      notes = noteResult || [];
+      const [folderResult, noteResult] = await fetchCloudRows();
+      folders = folderResult;
+      notes = noteResult;
       buildTree();
     } catch (error) {
       currentError = error.message || "无法读取云端数据";
@@ -246,6 +367,10 @@
   async function refresh() {
     await refreshAuth();
     await loadCloudData();
+    selectedItems.forEach((item, key) => {
+      if (!getItem(item)) selectedItems.delete(key);
+    });
+    if (!selectedItems.size) selectionMode = false;
     renderAuthControls();
     route();
   }
@@ -273,7 +398,7 @@
         ${trail
           .map(
             (folder, index) => `
-              <a href="#/${folder.id === "root" ? "" : `folder/${encodeURIComponent(folder.id)}`}">
+              <a href="#/${folder.id === ROOT_ID ? "" : `folder/${encodeURIComponent(folder.id)}`}">
                 ${escapeHtml(index === 0 ? "书房" : folder.name)}
               </a>
             `
@@ -291,10 +416,16 @@
     return `<div class="setup-card">${escapeHtml(message)}</div>`;
   }
 
+  function renderExtensionNotice() {
+    if (!isAdmin || hasExtendedFields) return "";
+    return `<div class="setup-card">当前数据库还没有新版置顶字段。重命名、移动、删除可用；置顶需要先在 Supabase 执行新版 SQL。</div>`;
+  }
+
   function renderHome() {
     const root = library.root;
     view.innerHTML = `
       ${renderSetupNotice()}
+      ${renderExtensionNotice()}
       <section class="page-head">
         <div>
           <p class="eyebrow">Bookshelf</p>
@@ -305,7 +436,7 @@
             ? `
               <div class="actions">
                 ${root.folders.length === 0 && seed.categories.length ? `<button class="button" type="button" data-action="import-seed">导入初始笔记</button>` : ""}
-                <button class="button primary" type="button" data-action="add-folder" data-folder-id="root">+ 文件夹</button>
+                <button class="button primary" type="button" data-action="add-folder" data-folder-id="${ROOT_ID}">+ 文件夹</button>
               </div>
             `
             : `<p class="read-only-note">只读模式</p>`
@@ -319,14 +450,27 @@
             : renderEmptyShelf("还没有文件夹")
         }
       </section>
+      ${renderSelectionBar()}
     `;
+  }
+
+  function renderSelectionMark(type, id) {
+    if (!isAdmin) return "";
+    return `<span class="selection-mark" aria-hidden="true">${isSelected(type, id) ? "✓" : ""}</span>`;
+  }
+
+  function renderPinnedBadge(item) {
+    return item.pinned ? `<span class="pin-badge">置顶</span>` : "";
   }
 
   function renderShelf(folder) {
     const noteCount = countNotes(folder);
     const folderCount = countFolders(folder);
+    const selected = isSelected("folder", folder.id);
     return `
-      <article class="shelf">
+      <article class="shelf ${selected ? "is-selected" : ""} ${folder.pinned ? "is-pinned" : ""}" data-selectable="true" data-item-type="folder" data-item-id="${escapeHtml(folder.id)}">
+        ${renderSelectionMark("folder", folder.id)}
+        ${renderPinnedBadge(folder)}
         <a class="shelf-link" href="#/folder/${encodeURIComponent(folder.id)}">
           <span class="folder-cover" aria-hidden="true">
             <span></span>
@@ -338,25 +482,8 @@
             <span>${folderCount} 个文件夹 · ${noteCount} 篇笔记</span>
           </div>
         </a>
-        ${
-          isAdmin
-            ? `
-              <div class="item-actions">
-                <button class="mini-button" type="button" data-action="rename-folder" data-folder-id="${escapeHtml(folder.id)}" aria-label="重命名 ${escapeHtml(folder.name)}">重命名</button>
-                <button class="mini-button danger" type="button" data-action="delete-folder" data-folder-id="${escapeHtml(folder.id)}" aria-label="删除 ${escapeHtml(folder.name)}">删除</button>
-              </div>
-            `
-            : ""
-        }
       </article>
     `;
-  }
-
-  function renderBookSpines(amount) {
-    const colors = ["green", "red", "blue", "sand", "ink"];
-    return Array.from({ length: Math.min(Math.max(amount, 4), 10) })
-      .map((_, index) => `<span class="book ${colors[index % colors.length]}"></span>`)
-      .join("");
   }
 
   function renderEmptyShelf(text) {
@@ -385,6 +512,7 @@
     const { folder, trail } = found;
     view.innerHTML = `
       ${renderBreadcrumb(trail)}
+      ${renderExtensionNotice()}
       <section class="page-head">
         <div>
           <p class="eyebrow">Folder</p>
@@ -416,16 +544,42 @@
             : `<div class="quiet">空</div>`
         }
       </section>
+      ${renderSelectionBar()}
     `;
   }
 
   function renderNoteCard(note) {
+    const selected = isSelected("note", note.id);
     return `
-      <a class="note-card" href="#/note/${encodeURIComponent(note.id)}">
+      <a class="note-card ${selected ? "is-selected" : ""} ${note.pinned ? "is-pinned" : ""}" href="#/note/${encodeURIComponent(note.id)}" data-selectable="true" data-item-type="note" data-item-id="${escapeHtml(note.id)}">
+        ${renderSelectionMark("note", note.id)}
+        ${renderPinnedBadge(note)}
         <span class="note-cover" aria-hidden="true"></span>
         <strong>${escapeHtml(note.title || "未命名笔记")}</strong>
         <span>${escapeHtml(excerpt(note.content)) || "空白笔记"}</span>
       </a>
+    `;
+  }
+
+  function renderSelectionBar() {
+    if (!isAdmin || !selectionMode) return "";
+    const items = selectedArray();
+    const pinnedItems = items.map(getItem).filter(Boolean).filter((item) => item.pinned);
+    const pinLabel = items.length && pinnedItems.length === items.length ? "取消置顶" : "置顶";
+    return `
+      <div class="selection-bar" role="region" aria-label="选择操作">
+        <div class="selection-count">
+          <strong>${items.length}</strong>
+          <span>已选择</span>
+        </div>
+        <div class="selection-actions">
+          <button class="button" type="button" data-action="toggle-pin-selected">${pinLabel}</button>
+          <button class="button" type="button" data-action="open-move-selected">分组至</button>
+          <button class="button" type="button" data-action="rename-selected" ${items.length === 1 ? "" : "disabled"}>重命名</button>
+          <button class="button danger-button" type="button" data-action="delete-selected">删除</button>
+          <button class="button" type="button" data-action="clear-selection">取消</button>
+        </div>
+      </div>
     `;
   }
 
@@ -448,7 +602,7 @@
               : `<span class="read-only-note">只读</span>`
           }
         </header>
-        <h1>${escapeHtml(note.title || "未命名笔记")}</h1>
+        <p class="reader-title">${escapeHtml(note.title || "未命名笔记")}</p>
         <div class="reader-body">${markdownToHtml(note.content)}</div>
       </article>
     `;
@@ -502,114 +656,57 @@
           ? `<div class="note-grid">${results.map(({ note }) => renderNoteCard(note)).join("")}</div>`
           : `<div class="quiet">没有找到</div>`
       }
+      ${renderSelectionBar()}
     `;
+  }
+
+  function insertModal(html, focusSelector = ".modal-input") {
+    document.querySelector(".modal-backdrop")?.remove();
+    document.body.insertAdjacentHTML("beforeend", html);
+    const input = document.querySelector(focusSelector);
+    input?.focus();
+    if (input?.select) input.select();
   }
 
   function openFolderDialog(parentId) {
     if (!isAdmin) return;
-    document.querySelector(".modal-backdrop")?.remove();
-    document.body.insertAdjacentHTML(
-      "beforeend",
-      `
-        <div class="modal-backdrop">
-          <form class="modal folder-form" data-folder-id="${escapeHtml(parentId)}">
-            <div class="modal-head">
-              <strong>新文件夹</strong>
-              <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
-            </div>
-            <input class="modal-input" name="name" placeholder="文件夹名称" autocomplete="off" />
-            <p class="modal-hint">名称会显示在书架卡片上，建议保持简短。</p>
-            <div class="modal-actions">
-              <button class="button" type="button" data-action="close-modal">取消</button>
-              <button class="button primary" type="submit">添加</button>
-            </div>
-          </form>
-        </div>
-      `
-    );
-    document.querySelector(".modal-input")?.focus();
-  }
-
-  function openRenameFolderDialog(folderId) {
-    if (!isAdmin) return;
-    const found = findFolder(folderId);
-    if (!found || found.folder.id === "root") return;
-
-    document.querySelector(".modal-backdrop")?.remove();
-    document.body.insertAdjacentHTML(
-      "beforeend",
-      `
-        <div class="modal-backdrop">
-          <form class="modal folder-rename-form" data-folder-id="${escapeHtml(folderId)}">
-            <div class="modal-head">
-              <strong>重命名文件夹</strong>
-              <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
-            </div>
-            <input class="modal-input" name="name" value="${escapeHtml(found.folder.name)}" placeholder="文件夹名称" autocomplete="off" />
-            <p class="modal-hint">只会修改显示名称，不会影响里面已有的笔记。</p>
-            <div class="modal-actions">
-              <button class="button" type="button" data-action="close-modal">取消</button>
-              <button class="button primary" type="submit">保存</button>
-            </div>
-          </form>
-        </div>
-      `
-    );
-    const input = document.querySelector(".modal-input");
-    input?.focus();
-    input?.select();
-  }
-
-  function openDeleteFolderDialog(folderId) {
-    if (!isAdmin) return;
-    const found = findFolder(folderId);
-    if (!found || found.folder.id === "root") return;
-
-    document.querySelector(".modal-backdrop")?.remove();
-    document.body.insertAdjacentHTML(
-      "beforeend",
-      `
-        <div class="modal-backdrop">
-          <form class="modal folder-delete-form" data-folder-id="${escapeHtml(folderId)}">
-            <div class="modal-head">
-              <strong>删除文件夹</strong>
-              <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
-            </div>
-            <p class="modal-hint">确定删除“${escapeHtml(found.folder.name)}”吗？里面的子文件夹和笔记也会一起删除，此操作不可撤销。</p>
-            <div class="modal-actions">
-              <button class="button" type="button" data-action="close-modal">取消</button>
-              <button class="button danger-button" type="submit">删除</button>
-            </div>
-          </form>
-        </div>
-      `
-    );
+    insertModal(`
+      <div class="modal-backdrop">
+        <form class="modal folder-form" data-folder-id="${escapeHtml(parentId)}">
+          <div class="modal-head">
+            <strong>新文件夹</strong>
+            <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
+          </div>
+          <input class="modal-input" name="name" placeholder="文件夹名称" autocomplete="off" />
+          <p class="modal-hint">名称会显示在书架卡片上，建议保持简短。</p>
+          <div class="modal-actions">
+            <button class="button" type="button" data-action="close-modal">取消</button>
+            <button class="button primary" type="submit">添加</button>
+          </div>
+        </form>
+      </div>
+    `);
   }
 
   function openLoginDialog() {
     if (!cloudReady) return;
-    document.querySelector(".modal-backdrop")?.remove();
-    document.body.insertAdjacentHTML(
-      "beforeend",
-      `
-        <div class="modal-backdrop">
-          <form class="modal login-form">
-            <div class="modal-head">
-              <strong>管理员登录</strong>
-              <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
-            </div>
-            <input class="modal-input" type="email" name="email" placeholder="邮箱" autocomplete="email" />
-            <input class="modal-input" type="password" name="password" placeholder="密码" autocomplete="current-password" />
-            <p class="modal-hint">登录成功后，云端权限策略会决定你是否可以编辑。</p>
-            <div class="modal-actions">
-              <button class="button" type="button" data-action="close-modal">取消</button>
-              <button class="button primary" type="submit">登录</button>
-            </div>
-          </form>
-        </div>
-      `
-    );
-    document.querySelector(".modal-input")?.focus();
+    insertModal(`
+      <div class="modal-backdrop">
+        <form class="modal login-form">
+          <div class="modal-head">
+            <strong>管理员登录</strong>
+            <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
+          </div>
+          <input class="modal-input" type="email" name="email" placeholder="邮箱" autocomplete="email" />
+          <input class="modal-input" type="password" name="password" placeholder="密码" autocomplete="current-password" />
+          <p class="modal-hint">登录成功后，云端权限策略会决定你是否可以编辑。</p>
+          <div class="modal-actions">
+            <button class="button" type="button" data-action="close-modal">取消</button>
+            <button class="button primary" type="submit">登录</button>
+          </div>
+        </form>
+      </div>
+    `);
   }
 
   async function login(form) {
@@ -640,7 +737,108 @@
   async function logout() {
     storeSession(null);
     isAdmin = false;
+    clearSelection(false);
     await refresh();
+  }
+
+  function openRenameSelectedDialog() {
+    if (!isAdmin) return;
+    const items = selectedArray();
+    if (items.length !== 1) return;
+    const item = items[0];
+    const target = getItem(item);
+    if (!target) return;
+    const currentName = item.type === "folder" ? target.name : target.title;
+    insertModal(`
+      <div class="modal-backdrop">
+        <form class="modal item-rename-form" data-item-type="${item.type}" data-item-id="${escapeHtml(item.id)}">
+          <div class="modal-head">
+            <strong>重命名</strong>
+            <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
+          </div>
+          <input class="modal-input" name="name" value="${escapeHtml(currentName || "")}" placeholder="名称" autocomplete="off" />
+          <p class="modal-hint">${item.type === "folder" ? "只会修改文件夹显示名称，里面的内容不会改变。" : "笔记名称会同步为编辑页里的标题。"}</p>
+          <div class="modal-actions">
+            <button class="button" type="button" data-action="close-modal">取消</button>
+            <button class="button primary" type="submit">保存</button>
+          </div>
+        </form>
+      </div>
+    `);
+  }
+
+  function openDeleteSelectedDialog() {
+    if (!isAdmin || !selectedItems.size) return;
+    const items = selectedArray();
+    const folderCount = items.filter((item) => item.type === "folder").length;
+    const noteCount = items.filter((item) => item.type === "note").length;
+    insertModal(
+      `
+        <div class="modal-backdrop">
+          <form class="modal selected-delete-form">
+            <div class="modal-head">
+              <strong>删除所选内容</strong>
+              <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
+            </div>
+            <p class="modal-hint">确定删除 ${items.length} 项吗？包含 ${folderCount} 个文件夹、${noteCount} 篇笔记。文件夹里的子文件夹和笔记也会一起删除，此操作不可撤销。</p>
+            <div class="modal-actions">
+              <button class="button" type="button" data-action="close-modal">取消</button>
+              <button class="button danger-button" type="submit">删除</button>
+            </div>
+          </form>
+        </div>
+      `,
+      ".danger-button"
+    );
+  }
+
+  function moveOptionLabel(folder, trail) {
+    if (folder.id === ROOT_ID) return "书房";
+    return trail
+      .filter((item) => item.id !== ROOT_ID)
+      .map((item) => item.name)
+      .join(" / ");
+  }
+
+  function openMoveSelectedDialog() {
+    if (!isAdmin || !selectedItems.size) return;
+    const items = selectedArray();
+    const includesNote = items.some((item) => item.type === "note");
+    const selectedFolderIds = items.filter((item) => item.type === "folder").map((item) => item.id);
+    const options = allFolders()
+      .filter(({ folder }) => {
+        if (folder.id === ROOT_ID) return !includesNote;
+        return !selectedFolderIds.some((folderId) => folder.id === folderId || isFolderInside(folder.id, folderId));
+      })
+      .map(({ folder, trail }) => `<option value="${escapeHtml(folder.id)}">${escapeHtml(moveOptionLabel(folder, trail))}</option>`)
+      .join("");
+    if (!options) return showError("没有可移动到的目标文件夹。");
+
+    insertModal(
+      `
+        <div class="modal-backdrop">
+          <form class="modal selected-move-form">
+            <div class="modal-head">
+              <strong>分组至</strong>
+              <button class="plain-button" type="button" data-action="close-modal" aria-label="关闭">×</button>
+            </div>
+            <select class="modal-input" name="target">${options}</select>
+            <p class="modal-hint">所选文件夹和笔记会移动到目标文件夹。文件夹不能移动到自己或自己的子文件夹里。</p>
+            <div class="modal-actions">
+              <button class="button" type="button" data-action="close-modal">取消</button>
+              <button class="button primary" type="submit">移动</button>
+            </div>
+          </form>
+        </div>
+      `,
+      ".modal-input"
+    );
+  }
+
+  function ensureExtendedFields() {
+    if (hasExtendedFields) return true;
+    showError("请先在 Supabase SQL 编辑器运行新版 supabase-schema.sql，才能使用置顶。");
+    return false;
   }
 
   async function addFolder(form) {
@@ -650,54 +848,137 @@
     if (!name) return;
 
     try {
-      await api("/rest/v1/folders", {
-        method: "POST",
-        body: JSON.stringify({
-          name,
-          parent_id: parentId === "root" ? null : parentId,
-        }),
-      }, true);
+      await api(
+        "/rest/v1/folders",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name,
+            parent_id: parentId === ROOT_ID ? null : parentId,
+          }),
+        },
+        true
+      );
       document.querySelector(".modal-backdrop")?.remove();
       await refresh();
-      location.hash = parentId === "root" ? "#/" : `#/folder/${encodeURIComponent(parentId)}`;
+      location.hash = parentId === ROOT_ID ? "#/" : `#/folder/${encodeURIComponent(parentId)}`;
     } catch (error) {
       showError(error.message);
     }
   }
 
-  async function renameFolder(form) {
+  async function renameSelectedItem(form) {
     if (!isAdmin) return;
-    const found = findFolder(form.dataset.folderId);
-    if (!found || found.folder.id === "root") return;
-
+    const type = form.dataset.itemType;
+    const id = form.dataset.itemId;
     const name = String(new FormData(form).get("name") || "").trim();
-    if (!name) return;
+    if (!name || !id) return;
 
     try {
-      await api(`/rest/v1/folders?id=eq.${encodeURIComponent(found.folder.id)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ name }),
-      }, true);
+      if (type === "folder") {
+        await api(`/rest/v1/folders?id=eq.${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name }),
+        }, true);
+      } else {
+        await api(`/rest/v1/notes?id=eq.${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ title: name }),
+        }, true);
+      }
       document.querySelector(".modal-backdrop")?.remove();
+      clearSelection(false);
       await refresh();
     } catch (error) {
       showError(error.message);
     }
   }
 
-  async function deleteFolder(form) {
-    if (!isAdmin) return;
-    const found = findFolder(form.dataset.folderId);
-    if (!found || found.folder.id === "root") return;
+  function shouldReturnHomeAfterDelete(items) {
+    const hash = decodeURIComponent(location.hash || "#/");
+    const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+    if (!parts.length) return false;
+    const selectedFolderIds = items.filter((item) => item.type === "folder").map((item) => item.id);
+    if (parts[0] === "folder") return selectedFolderIds.some((id) => parts[1] === id || isFolderInside(parts[1], id));
+    if (parts[0] === "note") {
+      const found = findNote(parts[1]);
+      return Boolean(found && selectedFolderIds.some((id) => found.trail.some((folder) => folder.id === id)));
+    }
+    return false;
+  }
 
-    const parent = found.trail.at(-2);
+  async function deleteSelectedItems() {
+    if (!isAdmin || !selectedItems.size) return;
+    const items = selectedArray();
+    const returnHome = shouldReturnHomeAfterDelete(items);
+    const noteIds = items.filter((item) => item.type === "note").map((item) => item.id);
+    const folderIds = items.filter((item) => item.type === "folder").map((item) => item.id);
+
     try {
-      await api(`/rest/v1/folders?id=eq.${encodeURIComponent(found.folder.id)}`, {
-        method: "DELETE",
-      }, true);
+      await Promise.all([
+        ...noteIds.map((id) => api(`/rest/v1/notes?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" }, true)),
+        ...folderIds.map((id) => api(`/rest/v1/folders?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" }, true)),
+      ]);
       document.querySelector(".modal-backdrop")?.remove();
+      clearSelection(false);
       await refresh();
-      location.hash = !parent || parent.id === "root" ? "#/" : `#/folder/${encodeURIComponent(parent.id)}`;
+      if (returnHome) location.hash = "#/";
+    } catch (error) {
+      showError(error.message);
+    }
+  }
+
+  async function moveSelectedItems(form) {
+    if (!isAdmin || !selectedItems.size) return;
+    const target = String(new FormData(form).get("target") || ROOT_ID);
+    const targetId = target === ROOT_ID ? null : target;
+    const items = selectedArray();
+    if (!targetId && items.some((item) => item.type === "note")) {
+      showError("笔记需要放在某个文件夹里，不能移动到书房根目录。");
+      return;
+    }
+
+    try {
+      await Promise.all(
+        items.map((item) => {
+          if (item.type === "folder") {
+            return api(`/rest/v1/folders?id=eq.${encodeURIComponent(item.id)}`, {
+              method: "PATCH",
+              body: JSON.stringify({ parent_id: targetId }),
+            }, true);
+          }
+          return api(`/rest/v1/notes?id=eq.${encodeURIComponent(item.id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ folder_id: targetId }),
+          }, true);
+        })
+      );
+      document.querySelector(".modal-backdrop")?.remove();
+      clearSelection(false);
+      await refresh();
+      location.hash = targetId ? `#/folder/${encodeURIComponent(targetId)}` : "#/";
+    } catch (error) {
+      showError(error.message);
+    }
+  }
+
+  async function togglePinSelected() {
+    if (!isAdmin || !selectedItems.size || !ensureExtendedFields()) return;
+    const items = selectedArray();
+    const nextPinned = !items.map(getItem).filter(Boolean).every((item) => item.pinned);
+
+    try {
+      await Promise.all(
+        items.map((item) => {
+          const table = item.type === "folder" ? "folders" : "notes";
+          return api(`/rest/v1/${table}?id=eq.${encodeURIComponent(item.id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ pinned: nextPinned }),
+          }, true);
+        })
+      );
+      clearSelection(false);
+      await refresh();
     } catch (error) {
       showError(error.message);
     }
@@ -706,11 +987,15 @@
   async function addNote(folderId) {
     if (!isAdmin) return;
     try {
-      const rows = await api("/rest/v1/notes?select=id", {
-        method: "POST",
-        headers: { Prefer: "return=representation" },
-        body: JSON.stringify({ folder_id: folderId, title: "新笔记", content: "" }),
-      }, true);
+      const rows = await api(
+        "/rest/v1/notes?select=id",
+        {
+          method: "POST",
+          headers: { Prefer: "return=representation" },
+          body: JSON.stringify({ folder_id: folderId, title: "新笔记", content: "" }),
+        },
+        true
+      );
       await refresh();
       location.hash = `#/edit/${encodeURIComponent(rows[0].id)}`;
     } catch (error) {
@@ -725,13 +1010,17 @@
 
     const data = new FormData(form);
     try {
-      await api(`/rest/v1/notes?id=eq.${encodeURIComponent(found.note.id)}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-        title: String(data.get("title") || "").trim() || "未命名笔记",
-        content: String(data.get("content") || ""),
-        }),
-      }, true);
+      await api(
+        `/rest/v1/notes?id=eq.${encodeURIComponent(found.note.id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            title: String(data.get("title") || "").trim() || "未命名笔记",
+            content: String(data.get("content") || ""),
+          }),
+        },
+        true
+      );
       await refresh();
       location.hash = `#/note/${encodeURIComponent(found.note.id)}`;
     } catch (error) {
@@ -744,11 +1033,15 @@
     for (const category of seed.categories) {
       let folder;
       try {
-        const folderRows = await api("/rest/v1/folders?select=id", {
-          method: "POST",
-          headers: { Prefer: "return=representation" },
-          body: JSON.stringify({ name: category.name, parent_id: null }),
-        }, true);
+        const folderRows = await api(
+          "/rest/v1/folders?select=id",
+          {
+            method: "POST",
+            headers: { Prefer: "return=representation" },
+            body: JSON.stringify({ name: category.name, parent_id: null }),
+          },
+          true
+        );
         folder = folderRows[0];
       } catch (error) {
         return showError(error.message);
@@ -761,10 +1054,14 @@
       }));
       if (rows.length) {
         try {
-          await api("/rest/v1/notes", {
-            method: "POST",
-            body: JSON.stringify(rows),
-          }, true);
+          await api(
+            "/rest/v1/notes",
+            {
+              method: "POST",
+              body: JSON.stringify(rows),
+            },
+            true
+          );
         } catch (error) {
           return showError(error.message);
         }
@@ -793,18 +1090,68 @@
     renderHome();
   }
 
+  function clearPressTimer() {
+    if (pressTimer) {
+      window.clearTimeout(pressTimer);
+      pressTimer = null;
+    }
+  }
+
+  document.addEventListener("pointerdown", (event) => {
+    if (!isAdmin || event.button > 0) return;
+    const selectable = event.target.closest("[data-selectable]");
+    if (!selectable) return;
+    clearPressTimer();
+    const type = selectable.dataset.itemType;
+    const id = selectable.dataset.itemId;
+    const key = itemKey(type, id);
+    pressTimer = window.setTimeout(() => {
+      suppressNextClickKey = key;
+      enterSelection(type, id);
+      clearPressTimer();
+    }, LONG_PRESS_MS);
+  });
+
+  document.addEventListener("pointerup", clearPressTimer);
+  document.addEventListener("pointercancel", clearPressTimer);
+  document.addEventListener("pointerleave", clearPressTimer);
+
+  document.addEventListener("contextmenu", (event) => {
+    const selectable = event.target.closest("[data-selectable]");
+    if (!isAdmin || !selectable) return;
+    event.preventDefault();
+    enterSelection(selectable.dataset.itemType, selectable.dataset.itemId);
+  });
+
   document.addEventListener("click", (event) => {
+    const selectable = event.target.closest("[data-selectable]");
+    if (selectable) {
+      const type = selectable.dataset.itemType;
+      const id = selectable.dataset.itemId;
+      const key = itemKey(type, id);
+      if (selectionMode || suppressNextClickKey === key) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (suppressNextClickKey === key) suppressNextClickKey = "";
+        else toggleSelection(type, id);
+        return;
+      }
+    }
+
     const target = event.target.closest("[data-action]");
-    if (!target) return;
+    if (!target || target.disabled) return;
     if (target.dataset.action === "login") openLoginDialog();
     if (target.dataset.action === "logout") logout();
     if (target.dataset.action === "add-folder") openFolderDialog(target.dataset.folderId);
-    if (target.dataset.action === "rename-folder") openRenameFolderDialog(target.dataset.folderId);
-    if (target.dataset.action === "delete-folder") openDeleteFolderDialog(target.dataset.folderId);
     if (target.dataset.action === "add-note") addNote(target.dataset.folderId);
     if (target.dataset.action === "edit-note") location.hash = `#/edit/${encodeURIComponent(target.dataset.noteId)}`;
     if (target.dataset.action === "close-modal") document.querySelector(".modal-backdrop")?.remove();
     if (target.dataset.action === "import-seed") importSeed();
+    if (target.dataset.action === "clear-selection") clearSelection();
+    if (target.dataset.action === "rename-selected") openRenameSelectedDialog();
+    if (target.dataset.action === "delete-selected") openDeleteSelectedDialog();
+    if (target.dataset.action === "open-move-selected") openMoveSelectedDialog();
+    if (target.dataset.action === "toggle-pin-selected") togglePinSelected();
   });
 
   document.addEventListener("click", (event) => {
@@ -815,7 +1162,8 @@
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      document.querySelector(".modal-backdrop")?.remove();
+      if (document.querySelector(".modal-backdrop")) document.querySelector(".modal-backdrop")?.remove();
+      else if (selectionMode) clearSelection();
     }
   });
 
@@ -832,15 +1180,21 @@
       return;
     }
 
-    if (event.target.matches(".folder-rename-form")) {
+    if (event.target.matches(".item-rename-form")) {
       event.preventDefault();
-      renameFolder(event.target);
+      renameSelectedItem(event.target);
       return;
     }
 
-    if (event.target.matches(".folder-delete-form")) {
+    if (event.target.matches(".selected-delete-form")) {
       event.preventDefault();
-      deleteFolder(event.target);
+      deleteSelectedItems();
+      return;
+    }
+
+    if (event.target.matches(".selected-move-form")) {
+      event.preventDefault();
+      moveSelectedItems(event.target);
       return;
     }
 

@@ -103,7 +103,7 @@ textarea {
 
 .workspace {
   width: min(1040px, calc(100vw - 36px));
-  margin: clamp(24px, 5vw, 54px) auto 70px;
+  margin: clamp(24px, 5vw, 54px) auto 110px;
 }
 
 .page-head,
@@ -165,6 +165,12 @@ h1 {
 .button:hover {
   border-color: var(--wood);
   transform: translateY(-1px);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
 }
 
 .back-button::before {
@@ -268,11 +274,12 @@ h1 {
   background: rgba(255, 253, 248, 0.78);
   box-shadow: 0 12px 28px rgba(59, 45, 31, 0.1);
   overflow: hidden;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
 .shelf {
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: 1fr;
 }
 
 .empty-shelf {
@@ -285,12 +292,62 @@ h1 {
   align-content: start;
   gap: 14px;
   min-height: 228px;
+  height: 100%;
   padding: 18px;
 }
 
 .shelf:hover,
 .note-card:hover {
   border-color: rgba(101, 72, 50, 0.48);
+}
+
+[data-selectable] {
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+
+.shelf.is-selected,
+.note-card.is-selected {
+  border-color: var(--wood-dark);
+  box-shadow: 0 16px 34px rgba(59, 45, 31, 0.18), 0 0 0 3px rgba(155, 106, 69, 0.16);
+  transform: translateY(-2px);
+}
+
+.selection-mark {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(101, 72, 50, 0.38);
+  border-radius: 999px;
+  color: var(--surface);
+  background: rgba(255, 253, 248, 0.84);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.is-selected .selection-mark {
+  border-color: var(--wood-dark);
+  background: var(--wood-dark);
+}
+
+.pin-badge {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  left: 10px;
+  padding: 4px 8px;
+  border: 1px solid rgba(67, 93, 130, 0.32);
+  border-radius: 999px;
+  color: var(--blue);
+  background: rgba(255, 253, 248, 0.88);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .folder-cover,
@@ -417,38 +474,6 @@ h1 {
   line-height: 1.7;
 }
 
-.item-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  padding: 8px 10px 10px;
-  border-top: 1px solid rgba(223, 216, 202, 0.74);
-  background: rgba(255, 253, 248, 0.62);
-}
-
-.mini-button {
-  cursor: pointer;
-  flex: 1;
-  min-height: 32px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  color: var(--muted);
-  background: rgba(255, 253, 248, 0.84);
-  font-size: 13px;
-  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
-}
-
-.mini-button:hover {
-  border-color: var(--wood);
-  color: var(--ink);
-  background: var(--surface);
-}
-
-.mini-button.danger:hover {
-  border-color: #8b3d34;
-  color: #8b3d34;
-}
-
 .quiet {
   display: grid;
   place-items: center;
@@ -474,8 +499,11 @@ h1 {
   margin-bottom: 26px;
 }
 
-.reader h1 {
-  margin-bottom: 26px;
+.reader-title {
+  margin: -8px 0 26px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 .reader-body {
@@ -582,6 +610,10 @@ h1 {
   outline: 0;
 }
 
+select.modal-input {
+  cursor: pointer;
+}
+
 .modal-input:focus {
   border-color: var(--wood);
   box-shadow: 0 0 0 4px rgba(155, 106, 69, 0.13);
@@ -603,6 +635,46 @@ h1 {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
+}
+
+.selection-bar {
+  position: fixed;
+  z-index: 12;
+  left: 50%;
+  bottom: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: min(860px, calc(100vw - 28px));
+  padding: 12px;
+  border: 1px solid rgba(101, 72, 50, 0.26);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.94);
+  box-shadow: 0 18px 48px rgba(32, 33, 31, 0.18);
+  backdrop-filter: blur(12px);
+  transform: translateX(-50%);
+}
+
+.selection-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 86px;
+  padding-left: 4px;
+  color: var(--muted);
+}
+
+.selection-count strong {
+  color: var(--ink);
+  font-size: 24px;
+}
+
+.selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 @media (max-width: 700px) {
@@ -642,5 +714,20 @@ h1 {
   .shelves,
   .note-grid {
     grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
+  }
+
+  .selection-bar {
+    align-items: stretch;
+    flex-direction: column;
+    bottom: 10px;
+  }
+
+  .selection-count {
+    min-width: 0;
+  }
+
+  .selection-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

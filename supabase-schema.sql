@@ -1,5 +1,5 @@
 -- 1) 把下面这一行里的邮箱改成你的 Supabase 管理员账号邮箱。
---    只有这个邮箱登录后才能新增、编辑、删除。
+--    只有这个邮箱登录后才能新增、编辑、移动、置顶、删除。
 create extension if not exists pgcrypto;
 
 create or replace function public.is_notes_admin()
@@ -14,6 +14,8 @@ create table if not exists public.folders (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   parent_id uuid references public.folders(id) on delete cascade,
+  pinned boolean not null default false,
+  sort_order integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -23,9 +25,16 @@ create table if not exists public.notes (
   folder_id uuid not null references public.folders(id) on delete cascade,
   title text not null default '未命名笔记',
   content text not null default '',
+  pinned boolean not null default false,
+  sort_order integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.folders add column if not exists pinned boolean not null default false;
+alter table public.folders add column if not exists sort_order integer not null default 0;
+alter table public.notes add column if not exists pinned boolean not null default false;
+alter table public.notes add column if not exists sort_order integer not null default 0;
 
 create or replace function public.set_updated_at()
 returns trigger
