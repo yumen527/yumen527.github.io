@@ -3,6 +3,8 @@
   const config = window.SUPABASE_CONFIG || {};
   const view = document.getElementById("view");
   const searchInput = document.getElementById("searchInput");
+  const searchPanel = document.getElementById("searchPanel");
+  const searchToggle = document.querySelector(".search-toggle");
   const authSlot = document.getElementById("authSlot");
   const AUTH_SESSION_KEY = "thought-note-supabase-session-v1";
   const LONG_PRESS_MS = 520;
@@ -25,6 +27,8 @@
   let hasExtendedFields = true;
   let selectionMode = false;
   let selectedItems = new Map();
+  let searchOpen = false;
+  let authMenuOpen = false;
   let pressTimer = null;
   let suppressNextClickKey = "";
 
@@ -377,19 +381,76 @@
 
   function renderAuthControls() {
     if (!cloudReady) {
-      authSlot.innerHTML = `<span class="status-badge">云端未配置</span>`;
+      authSlot.innerHTML = `
+        <button class="icon-button auth-menu-toggle" type="button" data-action="toggle-auth-menu" aria-label="云端状态" aria-expanded="${authMenuOpen}">
+          <span class="menu-dot" aria-hidden="true"></span>
+        </button>
+        ${authMenuOpen ? `<div class="auth-menu"><span class="menu-label">云端未配置</span></div>` : ""}
+      `;
       return;
     }
 
     if (isAdmin) {
       authSlot.innerHTML = `
-        <span class="status-badge">编辑模式</span>
-        <button class="button auth-button" type="button" data-action="logout">退出</button>
+        <button class="icon-button auth-menu-toggle is-admin" type="button" data-action="toggle-auth-menu" aria-label="管理菜单" aria-expanded="${authMenuOpen}">
+          <span class="menu-dot" aria-hidden="true"></span>
+        </button>
+        ${
+          authMenuOpen
+            ? `
+              <div class="auth-menu">
+                <span class="menu-label">编辑模式</span>
+                <button class="menu-item" type="button" data-action="logout">退出</button>
+              </div>
+            `
+            : ""
+        }
       `;
       return;
     }
 
-    authSlot.innerHTML = `<button class="button auth-button" type="button" data-action="login">管理员登录</button>`;
+    authSlot.innerHTML = `
+      <button class="icon-button auth-menu-toggle" type="button" data-action="toggle-auth-menu" aria-label="管理菜单" aria-expanded="${authMenuOpen}">
+        <span class="menu-dot" aria-hidden="true"></span>
+      </button>
+      ${
+        authMenuOpen
+          ? `
+            <div class="auth-menu">
+              <span class="menu-label">只读模式</span>
+              <button class="menu-item" type="button" data-action="login">管理员登录</button>
+            </div>
+          `
+          : ""
+      }
+    `;
+  }
+
+  function syncTopbarControls() {
+    searchPanel?.classList.toggle("is-open", searchOpen);
+    searchPanel?.setAttribute("aria-hidden", String(!searchOpen));
+    searchToggle?.classList.toggle("is-active", searchOpen);
+    searchToggle?.setAttribute("aria-expanded", String(searchOpen));
+    searchToggle?.setAttribute("aria-label", searchOpen ? "关闭搜索" : "打开搜索");
+  }
+
+  function setSearchOpen(nextOpen, focusInput = true) {
+    searchOpen = nextOpen;
+    syncTopbarControls();
+    if (searchOpen && focusInput) window.setTimeout(() => searchInput?.focus(), 0);
+  }
+
+  function closeSearch(clearValue = false) {
+    if (clearValue && searchInput.value.trim()) {
+      searchInput.value = "";
+      route();
+    }
+    setSearchOpen(false, false);
+  }
+
+  function toggleAuthMenu() {
+    authMenuOpen = !authMenuOpen;
+    renderAuthControls();
   }
 
   function renderBreadcrumb(trail) {
@@ -1140,8 +1201,21 @@
 
     const target = event.target.closest("[data-action]");
     if (!target || target.disabled) return;
-    if (target.dataset.action === "login") openLoginDialog();
-    if (target.dataset.action === "logout") logout();
+    if (target.dataset.action === "toggle-search") {
+      if (searchOpen && !searchInput.value.trim()) setSearchOpen(false, false);
+      else setSearchOpen(true);
+    }
+    if (target.dataset.action === "close-search") closeSearch(true);
+    if (target.dataset.action === "toggle-auth-menu") toggleAuthMenu();
+    if (target.dataset.action === "login") {
+      authMenuOpen = false;
+      renderAuthControls();
+      openLoginDialog();
+    }
+    if (target.dataset.action === "logout") {
+      authMenuOpen = false;
+      logout();
+    }
     if (target.dataset.action === "add-folder") openFolderDialog(target.dataset.folderId);
     if (target.dataset.action === "add-note") addNote(target.dataset.folderId);
     if (target.dataset.action === "edit-note") location.hash = `#/edit/${encodeURIComponent(target.dataset.noteId)}`;
@@ -1158,11 +1232,22 @@
     if (event.target.matches(".modal-backdrop")) {
       event.target.remove();
     }
+    const actionTarget = event.target.closest("[data-action]");
+    if (actionTarget?.dataset.action === "toggle-auth-menu") return;
+    if (authMenuOpen && !event.target.closest("#authSlot")) {
+      authMenuOpen = false;
+      renderAuthControls();
+    }
   });
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (document.querySelector(".modal-backdrop")) document.querySelector(".modal-backdrop")?.remove();
+      else if (searchOpen) closeSearch(false);
+      else if (authMenuOpen) {
+        authMenuOpen = false;
+        renderAuthControls();
+      }
       else if (selectionMode) clearSelection();
     }
   });
@@ -1209,6 +1294,7 @@
 
   buildPreviewTree();
   renderAuthControls();
+  syncTopbarControls();
   route();
   refresh();
 })();
