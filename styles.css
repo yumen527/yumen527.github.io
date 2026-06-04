@@ -171,6 +171,12 @@ h1 {
   background: var(--wood-dark);
 }
 
+.danger-button {
+  border-color: #8b3d34;
+  color: var(--surface);
+  background: #8b3d34;
+}
+
 .auth-button {
   min-width: 92px;
   white-space: nowrap;
@@ -228,59 +234,116 @@ h1 {
   line-height: 1.7;
 }
 
-.shelves {
+.shelves,
+.note-grid {
   display: grid;
-  gap: 24px;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 18px;
 }
 
 .sub-shelves:not(:empty) {
   margin-bottom: 34px;
 }
 
-.shelf-link {
-  display: block;
-}
-
-.shelf {
+.shelf,
+.note-card {
   position: relative;
-  min-height: 148px;
-  padding: 24px 24px 32px;
+  min-height: 228px;
+  height: 280px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(255, 253, 248, 0.74);
-  box-shadow: var(--shadow);
+  background: rgba(255, 253, 248, 0.78);
+  box-shadow: 0 12px 28px rgba(59, 45, 31, 0.1);
   overflow: hidden;
 }
 
-.shelf::after {
-  content: "";
-  position: absolute;
-  left: 18px;
-  right: 18px;
-  bottom: 18px;
-  height: 12px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, var(--wood), var(--wood-dark));
-  box-shadow: 0 8px 18px rgba(101, 72, 50, 0.22);
+.shelf {
+  display: grid;
+  grid-template-rows: 1fr auto;
 }
 
-.shelf:hover {
-  border-color: rgba(101, 72, 50, 0.44);
+.empty-shelf {
+  padding: 18px;
+}
+
+.shelf-link,
+.note-card {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-height: 228px;
+  padding: 18px;
+}
+
+.shelf:hover,
+.note-card:hover {
+  border-color: rgba(101, 72, 50, 0.48);
+}
+
+.folder-cover,
+.note-cover {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  border: 1px solid rgba(32, 33, 31, 0.26);
+  border-radius: 7px;
+  box-shadow: inset 8px 0 rgba(255, 255, 255, 0.18), 0 12px 22px rgba(59, 45, 31, 0.14);
+}
+
+.folder-cover {
+  background:
+    linear-gradient(90deg, rgba(32, 33, 31, 0.16) 0 16px, transparent 16px),
+    linear-gradient(145deg, var(--green), #6f8a69);
+}
+
+.folder-cover span {
+  position: absolute;
+  left: 30px;
+  right: 18px;
+  height: 2px;
+  background: rgba(255, 253, 248, 0.72);
+}
+
+.folder-cover span:nth-child(1) {
+  top: 28px;
+}
+
+.folder-cover span:nth-child(2) {
+  top: 42px;
+}
+
+.folder-cover span:nth-child(3) {
+  bottom: 22px;
+}
+
+.muted-cover {
+  opacity: 0.64;
+}
+
+.note-cover {
+  aspect-ratio: 4 / 3;
+  background:
+    linear-gradient(rgba(32, 33, 31, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(32, 33, 31, 0.08) 1px, transparent 1px),
+    #fffefa;
+  background-size: 18px 18px;
 }
 
 .shelf-title {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 18px;
+  display: grid;
+  gap: 6px;
 }
 
 .shelf-title h2 {
   margin-bottom: 0;
-  font-size: clamp(23px, 3vw, 32px);
-  line-height: 1.1;
+  font-size: 20px;
+  line-height: 1.25;
+  word-break: break-word;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .shelf-title span,
@@ -293,54 +356,6 @@ h1 {
 .read-only-note {
   margin: 0;
   font-size: 14px;
-}
-
-.book-row {
-  position: absolute;
-  z-index: 1;
-  left: 34px;
-  bottom: 29px;
-  display: flex;
-  align-items: end;
-  gap: 7px;
-  height: 72px;
-}
-
-.book {
-  display: block;
-  width: 25px;
-  height: 62px;
-  border: 1px solid rgba(32, 33, 31, 0.26);
-  border-radius: 3px 3px 1px 1px;
-  box-shadow: inset 5px 0 rgba(255, 255, 255, 0.18);
-}
-
-.book:nth-child(2n) {
-  height: 50px;
-}
-
-.book:nth-child(3n) {
-  height: 68px;
-}
-
-.book.green {
-  background: var(--green);
-}
-
-.book.red {
-  background: var(--red);
-}
-
-.book.blue {
-  background: var(--blue);
-}
-
-.book.sand {
-  background: var(--sand);
-}
-
-.book.ink {
-  background: #2f302d;
 }
 
 .note-shelf {
@@ -362,34 +377,50 @@ h1 {
   background: var(--line);
 }
 
-.note-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
-}
-
-.note-card {
-  display: grid;
-  gap: 12px;
-  min-height: 150px;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 10px 24px rgba(59, 45, 31, 0.08);
-}
-
-.note-card:hover {
-  border-color: var(--wood);
-}
-
 .note-card strong {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
   font-size: 19px;
   line-height: 1.35;
+  word-break: break-word;
 }
 
-.note-card span {
+.note-card > span:not(.note-cover) {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
   line-height: 1.7;
+}
+
+.item-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: space-between;
+  padding: 0 10px 10px;
+}
+
+.mini-button {
+  cursor: pointer;
+  flex: 1;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  background: rgba(255, 253, 248, 0.84);
+  font-size: 13px;
+}
+
+.mini-button:hover {
+  border-color: var(--wood);
+  color: var(--ink);
+}
+
+.mini-button.danger:hover {
+  border-color: #8b3d34;
+  color: #8b3d34;
 }
 
 .quiet {
@@ -561,10 +592,12 @@ h1 {
   }
 
   .shelf {
-    min-height: 176px;
+    min-height: 220px;
+    height: 260px;
   }
 
+  .shelves,
   .note-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
   }
 }

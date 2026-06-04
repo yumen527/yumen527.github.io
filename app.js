@@ -290,17 +290,29 @@
     const noteCount = countNotes(folder);
     const folderCount = countFolders(folder);
     return `
-      <a class="shelf-link" href="#/folder/${encodeURIComponent(folder.id)}">
-        <article class="shelf">
+      <article class="shelf">
+        <a class="shelf-link" href="#/folder/${encodeURIComponent(folder.id)}">
+          <span class="folder-cover" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </span>
           <div class="shelf-title">
             <h2>${escapeHtml(folder.name)}</h2>
             <span>${folderCount} 个文件夹 · ${noteCount} 篇笔记</span>
           </div>
-          <div class="book-row" aria-hidden="true">
-            ${renderBookSpines(noteCount + folderCount || 1)}
-          </div>
-        </article>
-      </a>
+        </a>
+        ${
+          isAdmin
+            ? `
+              <div class="item-actions">
+                <button class="mini-button" type="button" data-action="rename-folder" data-folder-id="${escapeHtml(folder.id)}">重命名</button>
+                <button class="mini-button danger" type="button" data-action="delete-folder" data-folder-id="${escapeHtml(folder.id)}">删除</button>
+              </div>
+            `
+            : ""
+        }
+      </article>
     `;
   }
 
@@ -314,11 +326,15 @@
   function renderEmptyShelf(text) {
     return `
       <article class="shelf empty-shelf">
+        <span class="folder-cover muted-cover" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </span>
         <div class="shelf-title">
           <h2>${escapeHtml(text)}</h2>
           <span>等待第一本书</span>
         </div>
-        <div class="book-row" aria-hidden="true">${renderBookSpines(1)}</div>
       </article>
     `;
   }
@@ -370,8 +386,9 @@
   function renderNoteCard(note) {
     return `
       <a class="note-card" href="#/note/${encodeURIComponent(note.id)}">
+        <span class="note-cover" aria-hidden="true"></span>
         <strong>${escapeHtml(note.title || "未命名笔记")}</strong>
-        <span>${escapeHtml(excerpt(note.content))}</span>
+        <span>${escapeHtml(excerpt(note.content)) || "空白笔记"}</span>
       </a>
     `;
   }
@@ -476,6 +493,59 @@
     document.querySelector(".modal-input")?.focus();
   }
 
+  function openRenameFolderDialog(folderId) {
+    if (!isAdmin) return;
+    const found = findFolder(folderId);
+    if (!found || found.folder.id === "root") return;
+
+    document.querySelector(".modal-backdrop")?.remove();
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `
+        <div class="modal-backdrop">
+          <form class="modal folder-rename-form" data-folder-id="${escapeHtml(folderId)}">
+            <div class="modal-head">
+              <strong>重命名文件夹</strong>
+              <button class="plain-button" type="button" data-action="close-modal">x</button>
+            </div>
+            <input class="modal-input" name="name" value="${escapeHtml(found.folder.name)}" placeholder="文件夹名称" autocomplete="off" />
+            <div class="modal-actions">
+              <button class="button" type="button" data-action="close-modal">取消</button>
+              <button class="button primary" type="submit">保存</button>
+            </div>
+          </form>
+        </div>
+      `
+    );
+    document.querySelector(".modal-input")?.focus();
+  }
+
+  function openDeleteFolderDialog(folderId) {
+    if (!isAdmin) return;
+    const found = findFolder(folderId);
+    if (!found || found.folder.id === "root") return;
+
+    document.querySelector(".modal-backdrop")?.remove();
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `
+        <div class="modal-backdrop">
+          <form class="modal folder-delete-form" data-folder-id="${escapeHtml(folderId)}">
+            <div class="modal-head">
+              <strong>删除文件夹</strong>
+              <button class="plain-button" type="button" data-action="close-modal">x</button>
+            </div>
+            <p class="modal-hint">确定删除“${escapeHtml(found.folder.name)}”吗？里面的子文件夹和笔记也会一起删除。</p>
+            <div class="modal-actions">
+              <button class="button" type="button" data-action="close-modal">取消</button>
+              <button class="button danger-button" type="submit">删除</button>
+            </div>
+          </form>
+        </div>
+      `
+    );
+  }
+
   function openLoginDialog() {
     if (!cloudReady) return;
     document.querySelector(".modal-backdrop")?.remove();
@@ -539,6 +609,35 @@
     document.querySelector(".modal-backdrop")?.remove();
     await refresh();
     location.hash = parentId === "root" ? "#/" : `#/folder/${encodeURIComponent(parentId)}`;
+  }
+
+  async function renameFolder(form) {
+    if (!isAdmin) return;
+    const found = findFolder(form.dataset.folderId);
+    if (!found || found.folder.id === "root") return;
+
+    const name = String(new FormData(form).get("name") || "").trim();
+    if (!name) return;
+
+    const { error } = await db.from("folders").update({ name }).eq("id", found.folder.id);
+    if (error) return showError(error.message);
+
+    document.querySelector(".modal-backdrop")?.remove();
+    await refresh();
+  }
+
+  async function deleteFolder(form) {
+    if (!isAdmin) return;
+    const found = findFolder(form.dataset.folderId);
+    if (!found || found.folder.id === "root") return;
+
+    const parent = found.trail.at(-2);
+    const { error } = await db.from("folders").delete().eq("id", found.folder.id);
+    if (error) return showError(error.message);
+
+    document.querySelector(".modal-backdrop")?.remove();
+    await refresh();
+    location.hash = !parent || parent.id === "root" ? "#/" : `#/folder/${encodeURIComponent(parent.id)}`;
   }
 
   async function addNote(folderId) {
@@ -622,6 +721,8 @@
     if (target.dataset.action === "login") openLoginDialog();
     if (target.dataset.action === "logout") logout();
     if (target.dataset.action === "add-folder") openFolderDialog(target.dataset.folderId);
+    if (target.dataset.action === "rename-folder") openRenameFolderDialog(target.dataset.folderId);
+    if (target.dataset.action === "delete-folder") openDeleteFolderDialog(target.dataset.folderId);
     if (target.dataset.action === "add-note") addNote(target.dataset.folderId);
     if (target.dataset.action === "edit-note") location.hash = `#/edit/${encodeURIComponent(target.dataset.noteId)}`;
     if (target.dataset.action === "close-modal") document.querySelector(".modal-backdrop")?.remove();
@@ -638,6 +739,18 @@
     if (event.target.matches(".folder-form")) {
       event.preventDefault();
       addFolder(event.target);
+      return;
+    }
+
+    if (event.target.matches(".folder-rename-form")) {
+      event.preventDefault();
+      renameFolder(event.target);
+      return;
+    }
+
+    if (event.target.matches(".folder-delete-form")) {
+      event.preventDefault();
+      deleteFolder(event.target);
       return;
     }
 
