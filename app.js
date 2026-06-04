@@ -1,58 +1,25 @@
 (function () {
-  const STORAGE_KEY = "thought-note-library-v2";
   const seed = window.NOTE_LIBRARY || { categories: [] };
+  const config = window.SUPABASE_CONFIG || {};
   const view = document.getElementById("view");
   const searchInput = document.getElementById("searchInput");
+  const authSlot = document.getElementById("authSlot");
 
-  let library = loadLibrary();
+  const cloudReady = Boolean(
+    window.supabase &&
+      config.url &&
+      config.anonKey &&
+      !config.url.includes("YOUR_") &&
+      !config.anonKey.includes("YOUR_")
+  );
+  const db = cloudReady ? window.supabase.createClient(config.url, config.anonKey) : null;
 
-  function loadLibrary() {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        localStorage.removeItem(STORAGE_KEY);
-      }
-    }
-
-    const initial = {
-      version: 2,
-      root: {
-        id: "root",
-        name: "书房",
-        folders: seed.categories.map((category) => ({
-          id: makeId("folder"),
-          name: category.name,
-          folders: [],
-          notes: category.notes.map((note) => ({
-            id: makeId("note"),
-            title: note.title,
-            content: note.content || "",
-            createdAt: note.updatedAt || today(),
-            updatedAt: note.updatedAt || today(),
-          })),
-        })),
-        notes: [],
-      },
-    };
-
-    saveLibrary(initial);
-    return initial;
-  }
-
-  function saveLibrary(nextLibrary = library) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(nextLibrary));
-  }
-
-  function makeId(prefix) {
-    if (window.crypto?.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
-    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  }
-
-  function today() {
-    return new Date().toISOString().slice(0, 10);
-  }
+  let folders = [];
+  let notes = [];
+  let library = { root: { id: "root", name: "书房", folders: [], notes: [] } };
+  let session = null;
+  let isAdmin = false;
+  let currentError = "";
 
   function escapeHtml(value) {
     return String(value)
@@ -63,16 +30,14 @@
       .replaceAll("'", "&#039;");
   }
 
+  function today() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
   function markdownToHtml(markdown) {
     const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
     const blocks = [];
     let paragraph = [];
-
-    function flushParagraph() {
-      if (!paragraph.length) return;
-      blocks.push(`<p>${inline(paragraph.join("\n"))}</p>`);
-      paragraph = [];
-    }
 
     function inline(text) {
       return escapeHtml(text)
@@ -80,6 +45,12 @@
         .replace(/\*(.+?)\*/g, "<em>$1</em>")
         .replace(/`(.+?)`/g, "<code>$1</code>")
         .replace(/\n/g, "<br>");
+    }
+
+    function flushParagraph() {
+      if (!paragraph.length) return;
+      blocks.push(`<p>${inline(paragraph.join("\n"))}</p>`);
+      paragraph = [];
     }
 
     for (const rawLine of lines) {
@@ -154,6 +125,112 @@
     ];
   }
 
+  function buildTree() {
+    const root = { id: "root", name: "书房", folders: [], notes: [] };
+    const byId = new Map();
+
+    folders.forEach((folder) => {
+      byId.set(folder.id, { ...folder, folders: [], notes: [] });
+    });
+
+    byId.forEach((folder) => {
+      const parent = folder.parent_id ? byId.get(folder.parent_id) : root;
+      (parent || root).folders.push(folder);
+    });
+
+    notes.forEach((note) => {
+      const parent = note.folder_id ? byId.get(note.folder_id) : root;
+      (parent || root).notes.push(note);
+    });
+
+    library = { root };
+  }
+
+  function buildPreviewTree() {
+    library = {
+      root: {
+        id: "root",
+        name: "书房",
+        folders: seed.categories.map((category, index) => ({
+          id: `preview-folder-${index}`,
+          name: category.name,
+          folders: [],
+          notes: category.notes.map((note, noteIndex) => ({
+            id: `preview-note-${index}-${noteIndex}`,
+            title: note.title,
+            content: note.content || "",
+            updated_at: note.updatedAt || today(),
+          })),
+        })),
+        notes: [],
+      },
+    };
+  }
+
+  async function refreshAuth() {
+    if (!db) {
+      session = null;
+      isAdmin = false;
+      return;
+    }
+
+    const { data } = await db.auth.getSession();
+    session = data.session || null;
+    isAdmin = false;
+
+    if (session) {
+      const { data: adminResult, error } = await db.rpc("is_notes_admin");
+      isAdmin = !error && adminResult === true;
+    }
+  }
+
+  async function loadCloudData() {
+    if (!db) {
+      buildPreviewTree();
+      return;
+    }
+
+    currentError = "";
+    const [folderResult, noteResult] = await Promise.all([
+      db.from("folders").select("id,name,parent_id,created_at,updated_at").order("created_at", { ascending: true }),
+      db.from("notes").select("id,title,content,folder_id,created_at,updated_at").order("updated_at", { ascending: false }),
+    ]);
+
+    if (folderResult.error || noteResult.error) {
+      currentError = folderResult.error?.message || noteResult.error?.message || "无法读取云端数据";
+      buildPreviewTree();
+      return;
+    }
+
+    folders = folderResult.data || [];
+    notes = noteResult.data || [];
+    buildTree();
+  }
+
+  async function refresh() {
+    await refreshAuth();
+    await loadCloudData();
+    renderAuthControls();
+    route();
+  }
+
+  function renderAuthControls() {
+    if (!cloudReady) {
+      authSlot.innerHTML = `<span class="status-badge">云端未配置</span>`;
+      return;
+    }
+
+    if (isAdmin) {
+      authSlot.innerHTML = `
+        <span class="status-badge">编辑模式</span>
+        <button class="button auth-button" type="button" data-action="logout">退出</button>
+      `;
+      return;
+    }
+
+    authSlot.innerHTML = `<button class="button auth-button" type="button" data-action="login">管理员登录</button>`;
+  }
+
   function renderBreadcrumb(trail) {
     return `
       <nav class="crumbs" aria-label="路径">
@@ -170,15 +247,33 @@
     `;
   }
 
+  function renderSetupNotice() {
+    if (cloudReady && !currentError) return "";
+    const message = cloudReady
+      ? `云端读取失败：${currentError}`
+      : "还没有填写 Supabase 配置。当前只是预览初始笔记，配置完成后会使用云端数据库。";
+    return `<div class="setup-card">${escapeHtml(message)}</div>`;
+  }
+
   function renderHome() {
     const root = library.root;
     view.innerHTML = `
+      ${renderSetupNotice()}
       <section class="page-head">
         <div>
           <p class="eyebrow">Bookshelf</p>
           <h1>书房</h1>
         </div>
-        <button class="button primary" type="button" data-action="add-folder" data-folder-id="root">+ 文件夹</button>
+        ${
+          isAdmin
+            ? `
+              <div class="actions">
+                ${root.folders.length === 0 && seed.categories.length ? `<button class="button" type="button" data-action="import-seed">导入初始笔记</button>` : ""}
+                <button class="button primary" type="button" data-action="add-folder" data-folder-id="root">+ 文件夹</button>
+              </div>
+            `
+            : `<p class="read-only-note">只读模式</p>`
+        }
       </section>
 
       <section class="shelves">
@@ -244,17 +339,19 @@
           <h1>${escapeHtml(folder.name)}</h1>
         </div>
         <div class="actions">
-          <button class="button" type="button" data-action="add-folder" data-folder-id="${escapeHtml(folder.id)}">+ 文件夹</button>
-          <button class="button primary" type="button" data-action="add-note" data-folder-id="${escapeHtml(folder.id)}">+ 笔记</button>
+          ${
+            isAdmin
+              ? `
+                <button class="button" type="button" data-action="add-folder" data-folder-id="${escapeHtml(folder.id)}">+ 文件夹</button>
+                <button class="button primary" type="button" data-action="add-note" data-folder-id="${escapeHtml(folder.id)}">+ 笔记</button>
+              `
+              : `<p class="read-only-note">只读模式</p>`
+          }
         </div>
       </section>
 
       <section class="shelves sub-shelves">
-        ${
-          folder.folders.length
-            ? folder.folders.map((child) => renderShelf(child)).join("")
-            : ""
-        }
+        ${folder.folders.length ? folder.folders.map((child) => renderShelf(child)).join("") : ""}
       </section>
 
       <section class="note-shelf">
@@ -292,7 +389,11 @@
       <article class="reader">
         <header class="reader-head">
           <a class="button" href="#/folder/${encodeURIComponent(folder.id)}">返回</a>
-          <button class="button primary" type="button" data-action="edit-note" data-note-id="${escapeHtml(note.id)}">编辑</button>
+          ${
+            isAdmin
+              ? `<button class="button primary" type="button" data-action="edit-note" data-note-id="${escapeHtml(note.id)}">编辑</button>`
+              : `<span class="read-only-note">只读</span>`
+          }
         </header>
         <h1>${escapeHtml(note.title || "未命名笔记")}</h1>
         <div class="reader-body">${markdownToHtml(note.content)}</div>
@@ -306,8 +407,12 @@
       renderHome();
       return;
     }
+    if (!isAdmin) {
+      renderNote(id);
+      return;
+    }
 
-    const { note, folder, trail } = found;
+    const { note, trail } = found;
     view.innerHTML = `
       ${renderBreadcrumb(trail)}
       <form class="editor" data-note-id="${escapeHtml(note.id)}">
@@ -317,7 +422,6 @@
         </div>
         <input class="title-input" name="title" value="${escapeHtml(note.title || "")}" placeholder="标题" />
         <textarea class="content-input" name="content" placeholder="写点什么">${escapeHtml(note.content || "")}</textarea>
-        <input type="hidden" name="folderId" value="${escapeHtml(folder.id)}" />
       </form>
     `;
   }
@@ -349,6 +453,7 @@
   }
 
   function openFolderDialog(parentId) {
+    if (!isAdmin) return;
     document.querySelector(".modal-backdrop")?.remove();
     document.body.insertAdjacentHTML(
       "beforeend",
@@ -357,7 +462,7 @@
           <form class="modal folder-form" data-folder-id="${escapeHtml(parentId)}">
             <div class="modal-head">
               <strong>新文件夹</strong>
-              <button class="plain-button" type="button" data-action="close-modal">×</button>
+              <button class="plain-button" type="button" data-action="close-modal">x</button>
             </div>
             <input class="modal-input" name="name" placeholder="文件夹名称" autocomplete="off" />
             <div class="modal-actions">
@@ -371,47 +476,129 @@
     document.querySelector(".modal-input")?.focus();
   }
 
-  function addFolder(form) {
-    const parentId = form.dataset.folderId;
-    const found = findFolder(parentId);
-    if (!found) return;
-    const name = new FormData(form).get("name");
-    if (!name?.trim()) return;
-    found.folder.folders.push({
-      id: makeId("folder"),
-      name: name.trim(),
-      folders: [],
-      notes: [],
-    });
-    saveLibrary();
+  function openLoginDialog() {
+    if (!cloudReady) return;
     document.querySelector(".modal-backdrop")?.remove();
-    renderFolder(parentId);
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `
+        <div class="modal-backdrop">
+          <form class="modal login-form">
+            <div class="modal-head">
+              <strong>管理员登录</strong>
+              <button class="plain-button" type="button" data-action="close-modal">x</button>
+            </div>
+            <input class="modal-input" type="email" name="email" placeholder="邮箱" autocomplete="email" />
+            <input class="modal-input" type="password" name="password" placeholder="密码" autocomplete="current-password" />
+            <p class="modal-hint">登录成功后，云端权限策略会决定你是否可以编辑。</p>
+            <div class="modal-actions">
+              <button class="button" type="button" data-action="close-modal">取消</button>
+              <button class="button primary" type="submit">登录</button>
+            </div>
+          </form>
+        </div>
+      `
+    );
+    document.querySelector(".modal-input")?.focus();
   }
 
-  function addNote(folderId) {
-    const found = findFolder(folderId);
-    if (!found) return;
-    const note = {
-      id: makeId("note"),
-      title: "新笔记",
-      content: "",
-      createdAt: today(),
-      updatedAt: today(),
-    };
-    found.folder.notes.unshift(note);
-    saveLibrary();
-    location.hash = `#/edit/${encodeURIComponent(note.id)}`;
+  async function login(form) {
+    const data = new FormData(form);
+    const email = String(data.get("email") || "").trim();
+    const password = String(data.get("password") || "");
+    const hint = form.querySelector(".modal-hint");
+
+    const { error } = await db.auth.signInWithPassword({ email, password });
+    if (error) {
+      hint.textContent = error.message || "登录失败。";
+      return;
+    }
+
+    document.querySelector(".modal-backdrop")?.remove();
+    await refresh();
   }
 
-  function saveNote(form) {
+  async function logout() {
+    if (!db) return;
+    await db.auth.signOut();
+    await refresh();
+  }
+
+  async function addFolder(form) {
+    if (!isAdmin) return;
+    const parentId = form.dataset.folderId;
+    const name = String(new FormData(form).get("name") || "").trim();
+    if (!name) return;
+
+    const { error } = await db.from("folders").insert({
+      name,
+      parent_id: parentId === "root" ? null : parentId,
+    });
+
+    if (error) return showError(error.message);
+    document.querySelector(".modal-backdrop")?.remove();
+    await refresh();
+    location.hash = parentId === "root" ? "#/" : `#/folder/${encodeURIComponent(parentId)}`;
+  }
+
+  async function addNote(folderId) {
+    if (!isAdmin) return;
+    const { data, error } = await db
+      .from("notes")
+      .insert({ folder_id: folderId, title: "新笔记", content: "" })
+      .select("id")
+      .single();
+
+    if (error) return showError(error.message);
+    await refresh();
+    location.hash = `#/edit/${encodeURIComponent(data.id)}`;
+  }
+
+  async function saveNote(form) {
+    if (!isAdmin) return;
     const found = findNote(form.dataset.noteId);
     if (!found) return;
+
     const data = new FormData(form);
-    found.note.title = String(data.get("title") || "").trim() || "未命名笔记";
-    found.note.content = String(data.get("content") || "");
-    found.note.updatedAt = today();
-    saveLibrary();
+    const { error } = await db
+      .from("notes")
+      .update({
+        title: String(data.get("title") || "").trim() || "未命名笔记",
+        content: String(data.get("content") || ""),
+      })
+      .eq("id", found.note.id);
+
+    if (error) return showError(error.message);
+    await refresh();
     location.hash = `#/note/${encodeURIComponent(found.note.id)}`;
+  }
+
+  async function importSeed() {
+    if (!isAdmin || !seed.categories.length) return;
+    for (const category of seed.categories) {
+      const { data: folder, error: folderError } = await db
+        .from("folders")
+        .insert({ name: category.name, parent_id: null })
+        .select("id")
+        .single();
+      if (folderError) return showError(folderError.message);
+
+      const rows = category.notes.map((note) => ({
+        folder_id: folder.id,
+        title: note.title || "未命名笔记",
+        content: note.content || "",
+      }));
+      if (rows.length) {
+        const { error: noteError } = await db.from("notes").insert(rows);
+        if (noteError) return showError(noteError.message);
+      }
+    }
+    await refresh();
+  }
+
+  function showError(message) {
+    currentError = message;
+    route();
   }
 
   function route() {
@@ -432,25 +619,37 @@
   document.addEventListener("click", (event) => {
     const target = event.target.closest("[data-action]");
     if (!target) return;
+    if (target.dataset.action === "login") openLoginDialog();
+    if (target.dataset.action === "logout") logout();
     if (target.dataset.action === "add-folder") openFolderDialog(target.dataset.folderId);
     if (target.dataset.action === "add-note") addNote(target.dataset.folderId);
     if (target.dataset.action === "edit-note") location.hash = `#/edit/${encodeURIComponent(target.dataset.noteId)}`;
     if (target.dataset.action === "close-modal") document.querySelector(".modal-backdrop")?.remove();
+    if (target.dataset.action === "import-seed") importSeed();
   });
 
   document.addEventListener("submit", (event) => {
+    if (event.target.matches(".login-form")) {
+      event.preventDefault();
+      login(event.target);
+      return;
+    }
+
     if (event.target.matches(".folder-form")) {
       event.preventDefault();
       addFolder(event.target);
       return;
     }
 
-    if (!event.target.matches(".editor")) return;
-    event.preventDefault();
-    saveNote(event.target);
+    if (event.target.matches(".editor")) {
+      event.preventDefault();
+      saveNote(event.target);
+    }
   });
 
   searchInput.addEventListener("input", () => renderSearch(searchInput.value));
   window.addEventListener("hashchange", route);
-  route();
+  if (db) db.auth.onAuthStateChange(() => refresh());
+
+  refresh();
 })();

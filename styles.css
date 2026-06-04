@@ -60,6 +60,12 @@ textarea {
   backdrop-filter: blur(14px);
 }
 
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -165,6 +171,24 @@ h1 {
   background: var(--wood-dark);
 }
 
+.auth-button {
+  min-width: 92px;
+  white-space: nowrap;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 253, 248, 0.72);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 .plain-button {
   cursor: pointer;
   width: 32px;
@@ -192,6 +216,16 @@ h1 {
 
 .crumbs a:hover {
   color: var(--ink);
+}
+
+.setup-card {
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border: 1px solid rgba(155, 106, 69, 0.34);
+  border-radius: 8px;
+  color: var(--wood-dark);
+  background: rgba(255, 253, 248, 0.76);
+  line-height: 1.7;
 }
 
 .shelves {
@@ -251,8 +285,14 @@ h1 {
 
 .shelf-title span,
 .note-card span,
-.quiet {
+.quiet,
+.read-only-note {
   color: var(--muted);
+}
+
+.read-only-note {
+  margin: 0;
+  font-size: 14px;
 }
 
 .book-row {
@@ -484,6 +524,13 @@ h1 {
   box-shadow: 0 0 0 4px rgba(155, 106, 69, 0.13);
 }
 
+.modal-hint {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
 @media (max-width: 700px) {
   .topbar {
     align-items: stretch;
@@ -492,6 +539,11 @@ h1 {
 
   #searchInput {
     width: 100%;
+  }
+
+  .top-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .page-head,
