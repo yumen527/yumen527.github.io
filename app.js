@@ -29,6 +29,7 @@
   let selectedItems = new Map();
   let searchOpen = false;
   let authMenuOpen = false;
+  let editToolsVisible = false;
   let pageActionsOpen = false;
   let pressTimer = null;
   let suppressNextClickKey = "";
@@ -139,6 +140,19 @@
     return text.length > 70 ? `${text.slice(0, 70)}...` : text;
   }
 
+  function shortDate(value) {
+    return value ? String(value).slice(0, 10) : today();
+  }
+
+  function coverHue(value) {
+    const text = String(value || "");
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = (hash * 31 + text.charCodeAt(index)) % 360;
+    }
+    return hash;
+  }
+
   function countNotes(folder) {
     return folder.notes.length + folder.folders.reduce((sum, child) => sum + countNotes(child), 0);
   }
@@ -228,14 +242,14 @@
     if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
     const orderDiff = Number(a.sort_order || 0) - Number(b.sort_order || 0);
     if (orderDiff) return orderDiff;
-    return String(a.created_at || "").localeCompare(String(b.created_at || ""));
+    return String(a.name || "").localeCompare(String(b.name || ""), "zh-Hans-CN");
   }
 
   function compareNotes(a, b) {
     if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
     const orderDiff = Number(a.sort_order || 0) - Number(b.sort_order || 0);
     if (orderDiff) return orderDiff;
-    return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
+    return String(a.title || "").localeCompare(String(b.title || ""), "zh-Hans-CN");
   }
 
   function sortTree(folder) {
@@ -371,6 +385,10 @@
 
   async function refresh() {
     await refreshAuth();
+    if (!isAdmin) {
+      editToolsVisible = false;
+      pageActionsOpen = false;
+    }
     await loadCloudData();
     selectedItems.forEach((item, key) => {
       if (!getItem(item)) selectedItems.delete(key);
@@ -401,6 +419,7 @@
             ? `
               <div class="auth-menu">
                 <span class="menu-label">编辑模式</span>
+                <button class="menu-item" type="button" data-action="toggle-edit-tools">${editToolsVisible ? "隐藏编辑工具" : "显示编辑工具"}</button>
                 <button class="menu-item" type="button" data-action="logout">退出</button>
               </div>
             `
@@ -454,13 +473,21 @@
     renderAuthControls();
   }
 
+  function toggleEditTools() {
+    editToolsVisible = !editToolsVisible;
+    authMenuOpen = false;
+    pageActionsOpen = false;
+    renderAuthControls();
+    route();
+  }
+
   function togglePageActions() {
     pageActionsOpen = !pageActionsOpen;
     route();
   }
 
   function renderPageActions({ folderId, includeNote = false, includeImport = false }) {
-    if (!isAdmin) return `<p class="read-only-note">只读模式</p>`;
+    if (!isAdmin || !editToolsVisible) return "";
     const safeFolderId = escapeHtml(folderId);
     const importButton = includeImport
       ? `<button class="button page-action-item" type="button" data-action="import-seed">导入初始笔记</button>`
@@ -481,6 +508,34 @@
         </div>
       </div>
     `;
+  }
+
+  function folderHref(folder) {
+    return folder && folder.id !== ROOT_ID ? `#/folder/${encodeURIComponent(folder.id)}` : "#/";
+  }
+
+  function renderLocationBar({ title, backTarget = null, actions = "" }) {
+    return `
+      <section class="location-bar">
+        <div class="location-main">
+          ${
+            backTarget
+              ? `<a class="back-icon" href="${folderHref(backTarget)}" aria-label="返回上一级"></a>`
+              : ""
+          }
+          <span class="location-title">${escapeHtml(title)}</span>
+        </div>
+        ${actions}
+      </section>
+    `;
+  }
+
+  function renderContentGrid(folder) {
+    const items = [
+      ...folder.folders.map((item) => renderShelf(item)),
+      ...folder.notes.map((item) => renderNoteCard(item)),
+    ].join("");
+    return items ? `<section class="library-grid">${items}</section>` : `<div class="quiet compact-empty">这里还没有内容</div>`;
   }
 
   function renderBreadcrumb(trail) {
@@ -517,24 +572,15 @@
     view.innerHTML = `
       ${renderSetupNotice()}
       ${renderExtensionNotice()}
-      <section class="page-head">
-        <div>
-          <p class="eyebrow">Bookshelf</p>
-          <h1>书房</h1>
-        </div>
-        ${renderPageActions({
+      ${renderLocationBar({
+        title: "书房",
+        actions: renderPageActions({
           folderId: ROOT_ID,
+          includeNote: true,
           includeImport: root.folders.length === 0 && seed.categories.length,
-        })}
-      </section>
-
-      <section class="shelves">
-        ${
-          root.folders.length
-            ? root.folders.map((folder) => renderShelf(folder)).join("")
-            : renderEmptyShelf("还没有文件夹")
-        }
-      </section>
+        }),
+      })}
+      ${renderContentGrid(root)}
       ${renderSelectionBar()}
     `;
   }
@@ -553,16 +599,12 @@
     const folderCount = countFolders(folder);
     const selected = isSelected("folder", folder.id);
     return `
-      <article class="shelf ${selected ? "is-selected" : ""} ${folder.pinned ? "is-pinned" : ""}" data-selectable="true" data-item-type="folder" data-item-id="${escapeHtml(folder.id)}">
+      <article class="book-card folder-card ${selected ? "is-selected" : ""} ${folder.pinned ? "is-pinned" : ""}" style="--cover-hue: ${coverHue(folder.id || folder.name)}" data-selectable="true" data-item-type="folder" data-item-id="${escapeHtml(folder.id)}">
         ${renderSelectionMark("folder", folder.id)}
         ${renderPinnedBadge(folder)}
-        <a class="shelf-link" href="#/folder/${encodeURIComponent(folder.id)}">
-          <span class="folder-cover" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </span>
-          <div class="shelf-title">
+        <a class="book-link" href="#/folder/${encodeURIComponent(folder.id)}">
+          <span class="folder-cover" aria-hidden="true"></span>
+          <div class="book-title">
             <h2>${escapeHtml(folder.name)}</h2>
             <span>${folderCount} 个文件夹 · ${noteCount} 篇笔记</span>
           </div>
@@ -573,13 +615,13 @@
 
   function renderEmptyShelf(text) {
     return `
-      <article class="shelf empty-shelf">
+      <article class="book-card folder-card empty-shelf">
         <span class="folder-cover muted-cover" aria-hidden="true">
           <span></span>
           <span></span>
           <span></span>
         </span>
-        <div class="shelf-title">
+        <div class="book-title">
           <h2>${escapeHtml(text)}</h2>
           <span>等待第一本书</span>
         </div>
@@ -595,31 +637,15 @@
     }
 
     const { folder, trail } = found;
+    const parent = trail.at(-2) || library.root;
     view.innerHTML = `
-      ${renderBreadcrumb(trail)}
       ${renderExtensionNotice()}
-      <section class="page-head">
-        <div>
-          <p class="eyebrow">Folder</p>
-          <h1>${escapeHtml(folder.name)}</h1>
-        </div>
-        ${renderPageActions({ folderId: folder.id, includeNote: true })}
-      </section>
-
-      <section class="shelves sub-shelves">
-        ${folder.folders.length ? folder.folders.map((child) => renderShelf(child)).join("") : ""}
-      </section>
-
-      <section class="note-shelf">
-        <div class="section-line">
-          <span>笔记</span>
-        </div>
-        ${
-          folder.notes.length
-            ? `<div class="note-grid">${folder.notes.map((note) => renderNoteCard(note)).join("")}</div>`
-            : `<div class="quiet">空</div>`
-        }
-      </section>
+      ${renderLocationBar({
+        title: folder.name,
+        backTarget: parent,
+        actions: renderPageActions({ folderId: folder.id, includeNote: true }),
+      })}
+      ${renderContentGrid(folder)}
       ${renderSelectionBar()}
     `;
   }
@@ -627,12 +653,12 @@
   function renderNoteCard(note) {
     const selected = isSelected("note", note.id);
     return `
-      <a class="note-card ${selected ? "is-selected" : ""} ${note.pinned ? "is-pinned" : ""}" href="#/note/${encodeURIComponent(note.id)}" data-selectable="true" data-item-type="note" data-item-id="${escapeHtml(note.id)}">
+      <a class="book-card note-card ${selected ? "is-selected" : ""} ${note.pinned ? "is-pinned" : ""}" href="#/note/${encodeURIComponent(note.id)}" data-selectable="true" data-item-type="note" data-item-id="${escapeHtml(note.id)}">
         ${renderSelectionMark("note", note.id)}
         ${renderPinnedBadge(note)}
         <span class="note-cover" aria-hidden="true"></span>
         <strong>${escapeHtml(note.title || "未命名笔记")}</strong>
-        <span>${escapeHtml(excerpt(note.content)) || "空白笔记"}</span>
+        <span>${escapeHtml(shortDate(note.updated_at || note.created_at))}</span>
       </a>
     `;
   }
@@ -729,7 +755,7 @@
       </section>
       ${
         results.length
-          ? `<div class="note-grid">${results.map(({ note }) => renderNoteCard(note)).join("")}</div>`
+          ? `<div class="library-grid">${results.map(({ note }) => renderNoteCard(note)).join("")}</div>`
           : `<div class="quiet">没有找到</div>`
       }
       ${renderSelectionBar()}
@@ -813,6 +839,8 @@
   async function logout() {
     storeSession(null);
     isAdmin = false;
+    editToolsVisible = false;
+    pageActionsOpen = false;
     clearSelection(false);
     await refresh();
   }
@@ -879,11 +907,10 @@
   function openMoveSelectedDialog() {
     if (!isAdmin || !selectedItems.size) return;
     const items = selectedArray();
-    const includesNote = items.some((item) => item.type === "note");
     const selectedFolderIds = items.filter((item) => item.type === "folder").map((item) => item.id);
     const options = allFolders()
       .filter(({ folder }) => {
-        if (folder.id === ROOT_ID) return !includesNote;
+        if (folder.id === ROOT_ID) return true;
         return !selectedFolderIds.some((folderId) => folder.id === folderId || isFolderInside(folder.id, folderId));
       })
       .map(({ folder, trail }) => `<option value="${escapeHtml(folder.id)}">${escapeHtml(moveOptionLabel(folder, trail))}</option>`)
@@ -1009,11 +1036,6 @@
     const target = String(new FormData(form).get("target") || ROOT_ID);
     const targetId = target === ROOT_ID ? null : target;
     const items = selectedArray();
-    if (!targetId && items.some((item) => item.type === "note")) {
-      showError("笔记需要放在某个文件夹里，不能移动到书房根目录。");
-      return;
-    }
-
     try {
       await Promise.all(
         items.map((item) => {
@@ -1025,7 +1047,7 @@
           }
           return api(`/rest/v1/notes?id=eq.${encodeURIComponent(item.id)}`, {
             method: "PATCH",
-            body: JSON.stringify({ folder_id: targetId }),
+          body: JSON.stringify({ folder_id: targetId }),
           }, true);
         })
       );
@@ -1068,7 +1090,7 @@
         {
           method: "POST",
           headers: { Prefer: "return=representation" },
-          body: JSON.stringify({ folder_id: folderId, title: "新笔记", content: "" }),
+          body: JSON.stringify({ folder_id: folderId === ROOT_ID ? null : folderId, title: "新笔记", content: "" }),
         },
         true
       );
@@ -1222,6 +1244,7 @@
     }
     if (target.dataset.action === "close-search") closeSearch(true);
     if (target.dataset.action === "toggle-auth-menu") toggleAuthMenu();
+    if (target.dataset.action === "toggle-edit-tools") toggleEditTools();
     if (target.dataset.action === "toggle-page-actions") togglePageActions();
     if (target.dataset.action === "login") {
       authMenuOpen = false;
