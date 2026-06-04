@@ -5,14 +5,14 @@
   const searchInput = document.getElementById("searchInput");
   const authSlot = document.getElementById("authSlot");
 
-  const cloudReady = Boolean(
-    window.supabase &&
-      config.url &&
+  const configReady = Boolean(
+    config.url &&
       config.anonKey &&
       !config.url.includes("YOUR_") &&
       !config.anonKey.includes("YOUR_")
   );
-  const db = cloudReady ? window.supabase.createClient(config.url, config.anonKey) : null;
+  let cloudReady = false;
+  let db = null;
 
   let folders = [];
   let notes = [];
@@ -20,6 +20,42 @@
   let session = null;
   let isAdmin = false;
   let currentError = "";
+
+  function loadScript(src, timeout = 7000) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      const timer = window.setTimeout(() => {
+        script.remove();
+        reject(new Error("load timeout"));
+      }, timeout);
+
+      script.src = src;
+      script.onload = () => {
+        window.clearTimeout(timer);
+        resolve();
+      };
+      script.onerror = () => {
+        window.clearTimeout(timer);
+        reject(new Error("load failed"));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  async function initSupabaseClient() {
+    if (!configReady) return;
+    if (!window.supabase) {
+      try {
+        await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2");
+      } catch {
+        await loadScript("https://unpkg.com/@supabase/supabase-js@2");
+      }
+    }
+    if (window.supabase) {
+      db = window.supabase.createClient(config.url, config.anonKey);
+      cloudReady = true;
+    }
+  }
 
   function escapeHtml(value) {
     return String(value)
@@ -215,8 +251,13 @@
   }
 
   function renderAuthControls() {
-    if (!cloudReady) {
+    if (!configReady) {
       authSlot.innerHTML = `<span class="status-badge">云端未配置</span>`;
+      return;
+    }
+
+    if (!cloudReady) {
+      authSlot.innerHTML = `<span class="status-badge">云端连接中</span>`;
       return;
     }
 
@@ -249,9 +290,11 @@
 
   function renderSetupNotice() {
     if (cloudReady && !currentError) return "";
-    const message = cloudReady
+    const message = currentError
       ? `云端读取失败：${currentError}`
-      : "还没有填写 Supabase 配置。当前只是预览初始笔记，配置完成后会使用云端数据库。";
+      : configReady
+        ? "正在连接云端数据库。若网络较慢，会先显示本地预览。"
+        : "还没有填写 Supabase 配置。当前只是预览初始笔记，配置完成后会使用云端数据库。";
     return `<div class="setup-card">${escapeHtml(message)}</div>`;
   }
 
@@ -764,5 +807,18 @@
   window.addEventListener("hashchange", route);
   if (db) db.auth.onAuthStateChange(() => refresh());
 
-  refresh();
+  buildPreviewTree();
+  renderAuthControls();
+  route();
+
+  initSupabaseClient()
+    .then(() => {
+      if (db) db.auth.onAuthStateChange(() => refresh());
+      return refresh();
+    })
+    .catch((error) => {
+      currentError = `Supabase 客户端加载失败：${error.message}`;
+      renderAuthControls();
+      route();
+    });
 })();
